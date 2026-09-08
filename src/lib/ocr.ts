@@ -1,5 +1,5 @@
 import { PSM, createWorker, type Worker } from "tesseract.js";
-import { segmentSpines, wholeImageVariants, type SpineVariant } from "./segment";
+import { segmentSpines, wholeImageVariants, type SegmentOptions, type SpineVariant } from "./segment";
 
 /** 책등 한 권을 읽은 결과 */
 export interface SpineReading {
@@ -7,8 +7,10 @@ export interface SpineReading {
   x1: number;
   /** 점수가 높은 쪽 읽기 */
   text: string;
-  /** 반대 방향으로 읽은 결과. 책등 글자 방향을 잘못 골랐을 때 사용자가 뒤집을 수 있다. */
-  alternative: string;
+  /** 점수가 낮았던 다른 읽기들. 방향을 잘못 골랐을 때 사용자가 바꿔 끼울 수 있다. */
+  alternatives: string[];
+  /** 다듬기 전 OCR 원문 */
+  raw: string;
   /** 0~1 */
   confidence: number;
 }
@@ -22,8 +24,15 @@ export interface ScanProgress {
 export interface ReadShelfOptions {
   /** "kor+eng" 또는 "eng" */
   langs: string;
+  /**
+   * 세로로 쌓인 한글을 언제 읽을지.
+   * auto: 돌려 읽은 결과가 시원찮을 때만 (기본), always: 항상, off: 읽지 않음
+   */
+  verticalMode?: "auto" | "always" | "off";
   onProgress?: (progress: ScanProgress) => void;
   signal?: AbortSignal;
+  /** 책등 분할 설정 (기본값으로 충분하다. 벤치에서 값을 바꿔 볼 때 쓴다.) */
+  segment?: SegmentOptions;
 }
 
 export interface ShelfResult {
@@ -33,7 +42,18 @@ export interface ShelfResult {
   usedFallback: boolean;
 }
 
+/** 세로로 쌓인 한글을 읽는 모델. 가로용 kor 모델로는 거의 못 읽는다. */
+const VERTICAL_LANG = "kor_vert";
+/**
+ * 돌려 세운 두 방향이 이 점수에 못 미치면 세로로 쌓인 글자를 의심하고 한 번 더 읽는다.
+ * 항상 읽으면 영문 책장에서 시간만 50% 더 든다.
+ */
+const VERTICAL_RETRY_SCORE = 70;
+/** 점수를 낼 때 한글 음절 하나를 라틴 글자 몇 개로 칠지 */
+const HANGUL_WEIGHT = 1.6;
+
 let cached: { langs: string; worker: Worker } | null = null;
+let cachedVertical: Worker | null = null;
 
 /** 하위 경로에 배포해도 자산을 찾을 수 있게 base를 붙인다. */
 function assetBase(): string {
@@ -47,6 +67,28 @@ async function getWorker(langs: string, onProgress?: (p: ScanProgress) => void):
   await cached?.worker.terminate();
   cached = null;
 
+  const worker = await spawn(langs, PSM.SINGLE_BLOCK, onProgress);
+  cached = { langs, worker };
+  return worker;
+}
+
+/** 세로로 쌓인 한글 전용 워커. 한국어를 켰을 때만 만든다. */
+async function getVerticalWorker(onProgress?: (p: ScanProgress) => void): Promise<Worker | null> {
+  if (cachedVertical) return cachedVertical;
+  try {
+    cachedVertical = await spawn(VERTICAL_LANG, PSM.SINGLE_BLOCK_VERT_TEXT, onProgress);
+    return cachedVertical;
+  } catch {
+    // 세로 모델을 못 받아도 가로 인식만으로 동작해야 한다.
+    return null;
+  }
+}
+
+async function spawn(
+  langs: string,
+  psm: PSM,
+  onProgress?: (p: ScanProgress) => void,
+): Promise<Worker> {
   const worker = await createWorker(langs, 1, {
     // 워커와 wasm 코어는 앱과 함께 배포한다 (scripts/copy-tesseract-assets.mjs).
     // CDN에 의존하면 오프라인에서 못 쓰고, 경로가 어긋나면 통째로 실패한다.
@@ -61,25 +103,26 @@ async function getWorker(langs: string, onProgress?: (p: ScanProgress) => void):
       }
     },
   });
-  await worker.setParameters({ tessedit_pageseg_mode: PSM.SINGLE_BLOCK });
-  cached = { langs, worker };
+  await worker.setParameters({ tessedit_pageseg_mode: psm });
   return worker;
 }
 
 export async function releaseOcr(): Promise<void> {
   await cached?.worker.terminate();
+  await cachedVertical?.terminate();
   cached = null;
+  cachedVertical = null;
 }
 
 /** 책장 사진 한 장에서 책등을 찾아 한 권씩 읽는다. */
 export async function readShelf(
   image: HTMLCanvasElement,
-  { langs, onProgress, signal }: ReadShelfOptions,
+  { langs, onProgress, signal, verticalMode = "auto", segment }: ReadShelfOptions,
 ): Promise<ShelfResult> {
   const worker = await getWorker(langs, onProgress);
   onProgress?.({ phase: "책등 찾는 중", done: 0, total: 1 });
 
-  const { bands, tiltDeg } = segmentSpines(image);
+  const { bands, tiltDeg } = segmentSpines(image, segment);
   const usedFallback = bands.length < 2;
 
   if (usedFallback) {
@@ -87,6 +130,15 @@ export async function readShelf(
     const readings = await readWholeImage(worker, image, onProgress, signal);
     return { readings, tiltDeg, usedFallback: true };
   }
+
+  // 한국어를 켰으면 세로로 쌓인 글자도 읽을 준비를 한다.
+  const wantsVertical = langs.includes("kor") && verticalMode !== "off";
+  if (!wantsVertical && cachedVertical) {
+    // 영어로 바꿨으면 세로 모델은 메모리에서 내린다.
+    await cachedVertical.terminate();
+    cachedVertical = null;
+  }
+  const verticalWorker = wantsVertical ? await getVerticalWorker(onProgress) : null;
 
   const readings: SpineReading[] = [];
   for (const [index, band] of bands.entries()) {
@@ -96,13 +148,24 @@ export async function readShelf(
     const candidates = await Promise.all(band.variants.map((variant) => readVariant(worker, variant)));
     candidates.sort((a, b) => b.score - a.score);
 
+    // 돌려 읽은 결과가 시원찮으면 세로로 쌓인 한글일 수 있다. 그런 책등만 한 번 더 읽는다.
+    const weak = (candidates[0]?.score ?? 0) < VERTICAL_RETRY_SCORE;
+    if (verticalWorker && (verticalMode === "always" || weak)) {
+      candidates.push(await readVariant(verticalWorker, band.upright));
+      candidates.sort((a, b) => b.score - a.score);
+    }
+
     const best = candidates[0];
     if (!best || !best.text) continue;
     readings.push({
       x0: band.x0,
       x1: band.x1,
       text: best.text,
-      alternative: candidates[1]?.text ?? "",
+      raw: best.raw,
+      alternatives: candidates
+        .slice(1)
+        .map((candidate) => candidate.text)
+        .filter((text, index, list) => text && text !== best.text && list.indexOf(text) === index),
       confidence: Math.min(1, best.score / 100),
     });
   }
@@ -113,13 +176,16 @@ export async function readShelf(
 
 interface Candidate {
   text: string;
+  /** 다듬기 전 OCR 원문 */
+  raw: string;
   score: number;
 }
 
 async function readVariant(worker: Worker, variant: SpineVariant): Promise<Candidate> {
   const { data } = await worker.recognize(variant.canvas, {}, { blocks: true, text: true });
   const words = collectWords(data.blocks);
-  return { text: cleanText(data.text ?? ""), score: scoreWords(words) };
+  const raw = (data.text ?? "").replace(/\s+/g, " ").trim();
+  return { text: cleanText(raw), raw, score: scoreWords(words) };
 }
 
 /** 분할 실패 시: 사진 전체를 0/90/-90도로 읽고 줄마다 후보를 만든다. */
@@ -142,12 +208,29 @@ async function readWholeImage(
       if (!text) continue;
       const score = scoreWords(line.words ?? []);
       if (score < 40) continue;
-      readings.push({ x0: 0, x1: 0, text, alternative: "", confidence: Math.min(1, score / 100) });
+      readings.push({
+        x0: 0,
+        x1: 0,
+        text,
+        raw: line.text.replace(/\s+/g, " ").trim(),
+        alternatives: [],
+        confidence: Math.min(1, score / 100),
+      });
     }
   }
 
   onProgress?.({ phase: "사진 전체를 읽는 중", done: variants.length, total: variants.length });
   return dedupe(readings);
+}
+
+/**
+ * 글자 수를 센다. 한글 음절은 자모 두세 개가 모인 글자라 라틴 한 글자보다 정보가 많다.
+ * 같은 무게로 세면 "코스모스"(4)가 길기만 한 영문 오독보다 늘 낮게 나온다.
+ */
+function countLetters(text: string): number {
+  const hangul = (text.match(/[가-힣]/g) ?? []).length;
+  const latin = (text.match(/[A-Za-z]/g) ?? []).length;
+  return latin + hangul * HANGUL_WEIGHT;
 }
 
 type LooseWord = { text?: string; confidence?: number };
@@ -182,7 +265,7 @@ function scoreWords(words: LooseWord[]): number {
   for (const word of words) {
     const text = (word.text ?? "").trim();
     if (!text) continue;
-    const letterCount = (text.match(/[A-Za-z가-힣]/g) ?? []).length;
+    const letterCount = countLetters(text);
     junk += (text.match(/[^A-Za-z가-힣0-9\s.,'":\-&!?]/g) ?? []).length;
     letters += letterCount;
     if (letterCount < 2) continue;
@@ -208,9 +291,31 @@ export function cleanText(raw: string): string {
       return letters >= 2 || /^[A-Za-z가-힣0-9]$/.test(token);
     });
 
-  const text = tokens.join(" ").trim();
+  const text = joinHangulSyllables(dropForeignTokens(tokens)).trim();
   const letters = (text.match(/[A-Za-z가-힣]/g) ?? []).length;
   return letters >= 2 ? text : "";
+}
+
+/**
+ * 한글 제목에는 옆 책 글자가 라틴 문자 쪼가리로 섞여 들어온다
+ * ("죄와 벌 xix S klclo"). 한글이 대부분인 읽기에서는 한글 없는 토막을 버린다.
+ */
+function dropForeignTokens(tokens: string[]): string[] {
+  const hangul = tokens.join("").match(/[가-힣]/g)?.length ?? 0;
+  const latin = tokens.join("").match(/[A-Za-z]/g)?.length ?? 0;
+  if (hangul < 2 || hangul < latin) return tokens;
+
+  const kept = tokens.filter((token) => /[가-힣]/.test(token));
+  return kept.length > 0 ? kept : tokens;
+}
+
+/**
+ * 세로로 쌓인 글자를 읽으면 음절마다 떨어져 나올 때가 있다 ("코 스 모 스").
+ * 전부 한 글자짜리 한글이면 붙여 준다. 진짜 띄어쓰기가 있는 제목은 건드리지 않는다.
+ */
+function joinHangulSyllables(tokens: string[]): string {
+  const allSingleHangul = tokens.length >= 3 && tokens.every((token) => /^[가-힣]$/.test(token));
+  return allSingleHangul ? tokens.join("") : tokens.join(" ");
 }
 
 function dedupe(readings: SpineReading[]): SpineReading[] {

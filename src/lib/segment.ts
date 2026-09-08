@@ -16,12 +16,14 @@ export interface SpineBand {
   /** 원본 이미지 기준 좌우 경계 */
   x0: number;
   x1: number;
-  /** 회전한 두 방향의 크롭. 책등 글자는 위→아래거나 아래→위다. */
+  /** 돌려 세운 두 방향의 크롭. 책등 글자는 위→아래거나 아래→위다. */
   variants: SpineVariant[];
+  /** 돌리지 않은 크롭. 한글 책등에 흔한 세로로 쌓은 글자를 읽을 때 쓴다. */
+  upright: SpineVariant;
 }
 
 export interface SpineVariant {
-  /** 90 또는 -90 */
+  /** 90, -90 은 돌려 세운 글자, 0 은 세로로 쌓인 글자용 */
   deg: number;
   canvas: HTMLCanvasElement;
 }
@@ -43,6 +45,8 @@ export interface SegmentOptions {
   targetSpineWidth?: number;
   /** 최대 밴드 수 */
   maxBands?: number;
+  /** 경계 점수 프로파일을 함께 돌려준다 (bench/segment.mjs 진단용) */
+  debug?: boolean;
 }
 
 const DEFAULTS = {
@@ -54,10 +58,13 @@ const DEFAULTS = {
   sideInset: 0.08,
   targetSpineWidth: 150,
   maxBands: 24,
+  debug: false,
 } satisfies Required<SegmentOptions>;
 
 export interface SegmentResult {
   bands: SpineBand[];
+  /** 진단용 경계 점수 프로파일. opts.debug 를 켰을 때만 채운다. */
+  profile?: { combined: number[]; run: number[]; color: number[]; scale: number };
   /** 추정한 사진 기울기(도). 화면에 보여 주면 사용자가 다시 찍을지 판단할 수 있다. */
   tiltDeg: number;
 }
@@ -70,29 +77,36 @@ export function segmentSpines(source: HTMLCanvasElement, options: SegmentOptions
   const ctx = analysis.getContext("2d", { willReadFrequently: true });
   if (!ctx) return { bands: [], tiltDeg: 0 };
 
-  const gray = toGray(ctx.getImageData(0, 0, aw, ah).data, aw * ah);
-  const edge = toEdgeMap(gray, aw, ah);
+  const pixels = ctx.getImageData(0, 0, aw, ah).data;
+  const gray = toGray(pixels, aw * ah);
+  const edge = toEdgeMap(pixels, aw, ah);
   const slope = estimateSlope(edge, aw, ah, opts.maxTiltDeg);
   const { run, coverage } = columnRuns(edge, aw, ah, slope);
 
-  const smoothed = smooth(run, Math.max(1, Math.round(aw * 0.002)));
-  const maxRun = Math.max(...smoothed) || 1;
+  const radius = Math.max(1, Math.round(aw * 0.002));
+  const runScore = normalize(smooth(run, radius));
+  // 색이 바뀌는 자리도 경계다. 밝기가 비슷한 두 책(파랑 옆 초록)은 이쪽으로 잡힌다.
+  const colorScore = normalize(smooth(columnColorChange(pixels, aw, ah), radius));
+
+  const combined = new Float32Array(aw);
+  for (let x = 0; x < aw; x++) combined[x] = 0.7 * runScore[x] + 0.3 * colorScore[x];
+
   const minGap = Math.max(12, Math.round(aw * opts.minWidthRatio));
 
   const peaks: number[] = [];
   for (let x = 1; x < aw - 1; x++) {
-    const score = smoothed[x] / maxRun;
+    const score = combined[x];
     if (score < opts.relScore) continue;
-    if (smoothed[x] < smoothed[x - 1] || smoothed[x] < smoothed[x + 1]) continue;
+    if (combined[x] < combined[x - 1] || combined[x] < combined[x + 1]) continue;
     const last = peaks[peaks.length - 1];
     if (last !== undefined && x - last < minGap) {
-      if (smoothed[x] > smoothed[last]) peaks[peaks.length - 1] = x;
+      if (combined[x] > combined[last]) peaks[peaks.length - 1] = x;
     } else {
       peaks.push(x);
     }
   }
 
-  const cuts = [0, ...peaks, aw - 1];
+  const cuts = splitWideSegments([0, ...peaks, aw - 1], combined, minGap, opts.relScore);
   const scale = source.width / aw;
   const bands: SpineBand[] = [];
 
@@ -123,7 +137,64 @@ export function segmentSpines(source: HTMLCanvasElement, options: SegmentOptions
     );
   }
 
-  return { bands, tiltDeg: (Math.atan(slope) * 180) / Math.PI };
+  return {
+    bands,
+    tiltDeg: (Math.atan(slope) * 180) / Math.PI,
+    profile: opts.debug
+      ? {
+          combined: Array.from(combined),
+          run: Array.from(runScore),
+          color: Array.from(colorScore),
+          scale,
+        }
+      : undefined,
+  };
+}
+
+/**
+ * 한 책장에 꽂힌 책들은 두께가 비슷하다.
+ * 유난히 넓은 구간은 경계를 놓쳐 두 권이 붙은 것으로 보고, 안쪽에서 가장 그럴듯한
+ * 자리를 찾아 쪼갠다. 전역 임계값을 낮추면 다른 곳이 잘게 부서지므로 여기서만 완화한다.
+ */
+function splitWideSegments(
+  cuts: number[],
+  score: Float32Array,
+  minGap: number,
+  relScore: number,
+): number[] {
+  const widthOf = (index: number) => cuts[index + 1] - cuts[index];
+  const widths = cuts.slice(0, -1).map((_, index) => widthOf(index)).sort((a, b) => a - b);
+  const median = widths[Math.floor(widths.length / 2)] ?? 0;
+  if (median < minGap) return cuts;
+
+  const limit = median * 1.8;
+  const floor = relScore * 0.4;
+  const result = [...cuts];
+
+  // 넓은 구간이 없어질 때까지, 다만 무한히 쪼개지 않도록 몇 번만 돈다.
+  for (let pass = 0; pass < 4; pass++) {
+    let changed = false;
+    for (let index = 0; index + 1 < result.length; index++) {
+      const x0 = result[index];
+      const x1 = result[index + 1];
+      if (x1 - x0 <= limit) continue;
+
+      let bestX = -1;
+      let bestScore = floor;
+      for (let x = x0 + minGap; x < x1 - minGap; x++) {
+        if (score[x] > bestScore && score[x] >= score[x - 1] && score[x] >= score[x + 1]) {
+          bestScore = score[x];
+          bestX = x;
+        }
+      }
+      if (bestX < 0) continue;
+      result.splice(index + 1, 0, bestX);
+      changed = true;
+      index++;
+    }
+    if (!changed) break;
+  }
+  return result;
 }
 
 /** 분석용 축소 캔버스. 원본 그대로 분석하면 느리기만 하다. */
@@ -149,30 +220,81 @@ function toGray(data: Uint8ClampedArray, pixels: number): Float32Array {
   return gray;
 }
 
-/** 에지 임계값은 사진마다 다르다. 밝기 변화량의 백분위로 정한다. */
-function edgeThreshold(gray: Float32Array, w: number, h: number): number {
+/**
+ * 이웃한 두 픽셀의 색 차이. 채널별 변화 중 가장 큰 값을 쓴다.
+ * 밝기만 보면 파랑 옆 초록처럼 밝기가 비슷한 경계를 놓친다.
+ */
+function colorDistance(pixels: Uint8ClampedArray, a: number, b: number): number {
+  const dr = Math.abs(pixels[a] - pixels[b]);
+  const dg = Math.abs(pixels[a + 1] - pixels[b + 1]);
+  const db = Math.abs(pixels[a + 2] - pixels[b + 2]);
+  return Math.max(dr, dg, db);
+}
+
+/** 에지 임계값은 사진마다 다르다. 색 변화량의 백분위로 정한다. */
+function edgeThreshold(pixels: Uint8ClampedArray, w: number, h: number): number {
   const sample: number[] = [];
   const step = Math.max(1, Math.round(Math.sqrt(w * h) / 220));
   for (let y = 0; y < h; y += step) {
     for (let x = 0; x + 1 < w; x += step) {
-      sample.push(Math.abs(gray[y * w + x + 1] - gray[y * w + x]));
+      sample.push(colorDistance(pixels, (y * w + x) * 4, (y * w + x + 1) * 4));
     }
   }
   sample.sort((a, b) => a - b);
   const p = sample[Math.floor(sample.length * 0.88)] ?? 0;
-  return Math.min(40, Math.max(6, p));
+  return Math.min(48, Math.max(8, p));
 }
 
-function toEdgeMap(gray: Float32Array, w: number, h: number): Uint8Array {
-  const threshold = edgeThreshold(gray, w, h);
+function toEdgeMap(pixels: Uint8ClampedArray, w: number, h: number): Uint8Array {
+  const threshold = edgeThreshold(pixels, w, h);
   const edge = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) {
     const row = y * w;
     for (let x = 0; x + 1 < w; x++) {
-      edge[row + x] = Math.abs(gray[row + x + 1] - gray[row + x]) > threshold ? 1 : 0;
+      edge[row + x] = colorDistance(pixels, (row + x) * 4, (row + x + 1) * 4) > threshold ? 1 : 0;
     }
   }
   return edge;
+}
+
+/**
+ * 열마다 대표 색(중앙값)을 내고, 옆 열과의 색 차이를 돌려준다.
+ *
+ * 평균을 쓰면 큰 글자가 지나가는 열이 통째로 밝아져 책 경계만큼 큰 변화가 생긴다.
+ * 중앙값은 글자가 열의 절반을 넘지 않는 한 책등 바탕색을 그대로 짚는다.
+ */
+function columnColorChange(pixels: Uint8ClampedArray, w: number, h: number): Float32Array {
+  const step = Math.max(1, Math.round(h / 300));
+  const sampleCount = Math.ceil(h / step);
+  const buffer = new Float32Array(sampleCount);
+  const medians = new Float32Array(w * 3);
+
+  for (let x = 0; x < w; x++) {
+    for (let channel = 0; channel < 3; channel++) {
+      let n = 0;
+      for (let y = 0; y < h; y += step) buffer[n++] = pixels[(y * w + x) * 4 + channel];
+      const slice = buffer.subarray(0, n).slice().sort();
+      medians[x * 3 + channel] = slice[Math.floor(n / 2)];
+    }
+  }
+
+  const change = new Float32Array(w);
+  for (let x = 1; x < w; x++) {
+    change[x] = Math.max(
+      Math.abs(medians[x * 3] - medians[(x - 1) * 3]),
+      Math.abs(medians[x * 3 + 1] - medians[(x - 1) * 3 + 1]),
+      Math.abs(medians[x * 3 + 2] - medians[(x - 1) * 3 + 2]),
+    );
+  }
+  return change;
+}
+
+/** 0~1 범위로 맞춘다. */
+function normalize(values: Float32Array): Float32Array {
+  const max = Math.max(...values) || 1;
+  const out = new Float32Array(values.length);
+  for (let i = 0; i < values.length; i++) out[i] = values[i] / max;
+  return out;
 }
 
 /** 에지를 여러 각도로 기울여 투영했을 때 가장 뾰족한 각도가 책장의 기울기다. */
@@ -294,10 +416,11 @@ function cropBand(source: HTMLCanvasElement, spec: CropSpec): SpineBand {
   const height = Math.max(1, Math.round(spec.bottom - spec.top));
   const scale = Math.min(4, Math.max(1, spec.targetWidth / width));
 
-  const variants = [90, -90].map((deg) => {
+  const draw = (deg: number): SpineVariant => {
+    const swap = deg % 180 !== 0;
     const canvas = document.createElement("canvas");
-    canvas.width = Math.round(height * scale);
-    canvas.height = Math.round(width * scale);
+    canvas.width = Math.round((swap ? height : width) * scale);
+    canvas.height = Math.round((swap ? width : height) * scale);
     const ctx = canvas.getContext("2d");
     if (ctx) {
       ctx.imageSmoothingQuality = "high";
@@ -307,9 +430,14 @@ function cropBand(source: HTMLCanvasElement, spec: CropSpec): SpineBand {
       ctx.drawImage(source, spec.x0, spec.top, width, height, -width / 2, -height / 2, width, height);
     }
     return { deg, canvas };
-  });
+  };
 
-  return { x0: Math.round(spec.originalX0), x1: Math.round(spec.originalX1), variants };
+  return {
+    x0: Math.round(spec.originalX0),
+    x1: Math.round(spec.originalX1),
+    variants: [draw(90), draw(-90)],
+    upright: draw(0),
+  };
 }
 
 /** 분할이 실패했을 때 쓸 전체 이미지 회전본 (정면 표지, 눕힌 책 대비) */

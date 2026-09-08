@@ -15,10 +15,10 @@ export interface RecognizedBook {
   /** 화면에 보여 줄 제목. 보강에 성공하면 정식 제목으로 바뀐다. */
   title: string;
   author: string;
-  /** OCR이 책등에서 읽은 원문 */
+  /** OCR이 책등에서 읽은 원문 (다듬기 전) */
   spineText: string;
-  /** 반대 방향으로 읽은 결과 */
-  alternative: string;
+  /** 다른 방향/모델로 읽은 결과들 */
+  alternatives: string[];
   /** 0~1 */
   confidence: number;
   match?: BookMatch;

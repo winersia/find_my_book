@@ -100,8 +100,8 @@ export default function App() {
           collected.push({
             title: reading.text,
             author: "",
-            spineText: reading.text,
-            alternative: reading.alternative,
+            spineText: reading.raw,
+            alternatives: reading.alternatives,
             confidence: reading.confidence,
           });
         }

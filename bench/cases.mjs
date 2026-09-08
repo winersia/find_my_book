@@ -1,0 +1,46 @@
+/** 정확도를 재는 책장 묶음. 제목은 실제로 있는 책들로 골랐다. */
+export const CASES = [
+  {
+    id: "en-rotated",
+    label: "영문 · 돌린 글자",
+    layout: "rotated",
+    korean: false,
+    titles: [
+      "Design Patterns",
+      "Clean Code",
+      "Deep Work",
+      "The Pragmatic Programmer",
+      "Sapiens",
+      "Refactoring",
+      "The Selfish Gene",
+      "Thinking Fast and Slow",
+      "The Mythical Man-Month",
+      "Site Reliability",
+    ],
+  },
+  {
+    id: "ko-rotated",
+    label: "한글 · 돌린 글자",
+    layout: "rotated",
+    korean: true,
+    titles: [
+      "코스모스",
+      "사피엔스",
+      "데미안",
+      "어린 왕자",
+      "총 균 쇠",
+      "이기적 유전자",
+      "죄와 벌",
+      "노르웨이의 숲",
+      "정의란 무엇인가",
+      "미움받을 용기",
+    ],
+  },
+  {
+    id: "ko-stacked",
+    label: "한글 · 세로로 쌓은 글자",
+    layout: "stacked",
+    korean: true,
+    titles: ["코스모스", "사피엔스", "데미안", "어린왕자", "총균쇠", "이기적유전자", "죄와벌", "노르웨이의숲"],
+  },
+];

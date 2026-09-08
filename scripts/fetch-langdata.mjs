@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const base = (lang) => `https://cdn.jsdelivr.net/npm/@tesseract.js-data/${lang}/4.0.0_best_int`;
-const langs = process.argv.slice(2).length ? process.argv.slice(2) : ["eng", "kor"];
+const langs = process.argv.slice(2).length ? process.argv.slice(2) : ["eng", "kor", "kor_vert"];
 const target = path.resolve("public/tessdata");
 fs.mkdirSync(target, { recursive: true });
 

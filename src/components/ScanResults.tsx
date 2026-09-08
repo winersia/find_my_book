@@ -10,9 +10,14 @@ interface Props {
   onDiscard: () => void;
 }
 
+/** 이 아래로 떨어지면 대개 옆 책 글자가 섞인 오독이다. 기본 선택에서 빼 둔다. */
+const TRUST_THRESHOLD = 0.6;
+
 export function ScanResults({ books, imageCount, elapsedMs, usedFallback, onSave, onDiscard }: Props) {
   const [edited, setEdited] = useState<RecognizedBook[]>(books);
-  const [excluded, setExcluded] = useState<Set<number>>(new Set());
+  const [excluded, setExcluded] = useState<Set<number>>(
+    () => new Set(books.flatMap((book, index) => (book.confidence < TRUST_THRESHOLD ? [index] : []))),
+  );
 
   const selected = useMemo(
     () => edited.filter((_, index) => !excluded.has(index)),
@@ -34,11 +39,12 @@ export function ScanResults({ books, imageCount, elapsedMs, usedFallback, onSave
     );
   };
 
-  /** 책등 글자 방향을 잘못 골랐을 때 반대쪽 읽기로 바꾼다. */
-  const flip = (index: number) => {
+  /** 글자 방향을 잘못 골랐을 때 다음 후보로 바꿔 끼운다. */
+  const cycle = (index: number) => {
     const book = edited[index];
-    if (!book.alternative) return;
-    update(index, { title: book.alternative, alternative: book.title, match: undefined });
+    const [next, ...rest] = book.alternatives;
+    if (!next) return;
+    update(index, { title: next, alternatives: [...rest, book.title], match: undefined });
   };
 
   if (books.length === 0) {
@@ -67,7 +73,10 @@ export function ScanResults({ books, imageCount, elapsedMs, usedFallback, onSave
           책등 경계를 나누지 못해 사진 전체에서 글자만 골라냈습니다. 결과가 거칠 수 있어요.
         </p>
       )}
-      <p className="notes">잘못 읽은 제목은 눌러서 고칠 수 있습니다.</p>
+      <p className="notes">
+        잘못 읽은 제목은 눌러서 고칠 수 있습니다.
+        {excluded.size > 0 && ` 흐리게 읽힌 ${excluded.size}권은 선택에서 빼 두었어요.`}
+      </p>
 
       <ul className="book-list">
         {edited.map((book, index) => {
@@ -115,9 +124,9 @@ export function ScanResults({ books, imageCount, elapsedMs, usedFallback, onSave
                       원문 “{book.spineText}”
                     </span>
                   )}
-                  {book.alternative && (
-                    <button type="button" className="badge link" onClick={() => flip(index)}>
-                      다른 방향 “{shorten(book.alternative)}”
+                  {book.alternatives.length > 0 && (
+                    <button type="button" className="badge link" onClick={() => cycle(index)}>
+                      다르게 읽기 “{shorten(book.alternatives[0])}”
                     </button>
                   )}
                 </div>
