@@ -15,7 +15,7 @@ export function Library({ books, onRemove, onClear }: Props) {
     const needle = query.trim().toLowerCase();
     if (!needle) return books;
     return books.filter((book) =>
-      [book.title, book.author, book.publisher, book.match?.author ?? ""]
+      [book.title, book.author, book.spineText, book.match?.author ?? ""]
         .join(" ")
         .toLowerCase()
         .includes(needle),
@@ -77,7 +77,9 @@ export function Library({ books, onRemove, onClear }: Props) {
               <p className="title">{book.title}</p>
               <p className="author">{book.author || book.match?.author || "저자 미상"}</p>
               <div className="badges">
-                {book.publisher && <span className="badge">{book.publisher}</span>}
+                {book.match?.firstPublishYear && (
+                  <span className="badge">{book.match.firstPublishYear}</span>
+                )}
                 {book.match?.isbn && <span className="badge subtle">ISBN {book.match.isbn}</span>}
                 {book.match?.infoUrl && (
                   <a className="badge link" href={book.match.infoUrl} target="_blank" rel="noreferrer">

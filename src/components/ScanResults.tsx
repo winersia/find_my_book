@@ -1,15 +1,16 @@
 import { useMemo, useState } from "react";
-import type { RecognizedBook, ScanMeta } from "../lib/types";
+import type { RecognizedBook } from "../lib/types";
 
 interface Props {
   books: RecognizedBook[];
-  notes: string;
-  meta: ScanMeta;
+  imageCount: number;
+  elapsedMs: number;
+  usedFallback: boolean;
   onSave: (books: RecognizedBook[]) => void;
   onDiscard: () => void;
 }
 
-export function ScanResults({ books, notes, meta, onSave, onDiscard }: Props) {
+export function ScanResults({ books, imageCount, elapsedMs, usedFallback, onSave, onDiscard }: Props) {
   const [edited, setEdited] = useState<RecognizedBook[]>(books);
   const [excluded, setExcluded] = useState<Set<number>>(new Set());
 
@@ -33,11 +34,18 @@ export function ScanResults({ books, notes, meta, onSave, onDiscard }: Props) {
     );
   };
 
+  /** 책등 글자 방향을 잘못 골랐을 때 반대쪽 읽기로 바꾼다. */
+  const flip = (index: number) => {
+    const book = edited[index];
+    if (!book.alternative) return;
+    update(index, { title: book.alternative, alternative: book.title, match: undefined });
+  };
+
   if (books.length === 0) {
     return (
       <section className="results empty">
-        <h2>책을 찾지 못했습니다</h2>
-        <p>{notes || "책등 글자가 보이도록 조금 더 가까이에서 다시 찍어 주세요."}</p>
+        <h2>글자를 읽지 못했어요</h2>
+        <p>책등이 화면에 꽉 차도록 더 가까이에서, 정면으로 다시 찍어 주세요.</p>
         <button type="button" onClick={onDiscard}>
           다시 찍기
         </button>
@@ -48,13 +56,18 @@ export function ScanResults({ books, notes, meta, onSave, onDiscard }: Props) {
   return (
     <section className="results">
       <header className="results-header">
-        <h2>{edited.length}권을 찾았어요</h2>
+        <h2>{edited.length}권을 읽었어요</h2>
         <p className="meta">
-          사진 {meta.imageCount}장 · {(meta.elapsedMs / 1000).toFixed(1)}초 · {meta.model}
+          사진 {imageCount}장 · {(elapsedMs / 1000).toFixed(0)}초
         </p>
       </header>
 
-      {notes && <p className="notes">메모: {notes}</p>}
+      {usedFallback && (
+        <p className="notes">
+          책등 경계를 나누지 못해 사진 전체에서 글자만 골라냈습니다. 결과가 거칠 수 있어요.
+        </p>
+      )}
+      <p className="notes">잘못 읽은 제목은 눌러서 고칠 수 있습니다.</p>
 
       <ul className="book-list">
         {edited.map((book, index) => {
@@ -89,14 +102,23 @@ export function ScanResults({ books, notes, meta, onSave, onDiscard }: Props) {
                 />
                 <div className="badges">
                   <ConfidenceBadge value={book.confidence} />
-                  {book.publisher && <span className="badge">{book.publisher}</span>}
+                  {book.match && (
+                    <span className="badge" title="Open Library에서 찾은 책">
+                      제목 보정됨
+                    </span>
+                  )}
                   {book.match?.firstPublishYear && (
                     <span className="badge">{book.match.firstPublishYear}</span>
                   )}
                   {book.spineText && book.spineText !== book.title && (
                     <span className="badge subtle" title="책등에서 읽은 원문">
-                      “{book.spineText}”
+                      원문 “{book.spineText}”
                     </span>
+                  )}
+                  {book.alternative && (
+                    <button type="button" className="badge link" onClick={() => flip(index)}>
+                      다른 방향 “{shorten(book.alternative)}”
+                    </button>
                   )}
                 </div>
               </div>
@@ -120,6 +142,10 @@ export function ScanResults({ books, notes, meta, onSave, onDiscard }: Props) {
       </div>
     </section>
   );
+}
+
+function shorten(value: string): string {
+  return value.length > 18 ? `${value.slice(0, 18)}…` : value;
 }
 
 function ConfidenceBadge({ value }: { value: number }) {

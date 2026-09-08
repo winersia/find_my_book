@@ -1,14 +1,10 @@
+import { normalize } from "./text";
 import type { RecognizedBook, SavedBook } from "./types";
 
 const STORAGE_KEY = "find-my-book:library:v1";
 
-/** 제목/저자 비교용 정규화. 공백, 문장부호, 대소문자를 무시한다. */
+/** 같은 책인지 가리는 열쇠. 공백, 문장부호, 대소문자를 무시한다. */
 export function dedupeKey(book: Pick<RecognizedBook, "title" | "author">): string {
-  const normalize = (value: string) =>
-    value
-      .toLowerCase()
-      .replace(/[\s\p{P}\p{S}]/gu, "")
-      .trim();
   return `${normalize(book.title)}|${normalize(book.author).slice(0, 12)}`;
 }
 
@@ -66,12 +62,11 @@ function createId(): string {
 }
 
 export function toCsv(books: SavedBook[]): string {
-  const header = ["제목", "저자", "출판사", "언어", "신뢰도", "ISBN", "저장일"];
+  const header = ["제목", "저자", "책등 원문", "신뢰도", "ISBN", "저장일"];
   const rows = books.map((book) => [
     book.title,
     book.author || book.match?.author || "",
-    book.publisher,
-    book.language,
+    book.spineText,
     book.confidence.toFixed(2),
     book.match?.isbn ?? "",
     book.savedAt.slice(0, 10),

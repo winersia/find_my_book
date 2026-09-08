@@ -171,10 +171,68 @@ button.danger {
   font-size: 0.85rem;
 }
 
-.progress,
 .notes {
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+/* 진행 상황 */
+.progress {
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.progress p {
+  margin: 0 0 8px;
+}
+
+.progress .bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.progress .bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+
+/* 설정 */
+.settings {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.settings label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font: inherit;
+}
+
+.settings .checkbox input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
 }
 
 .error {
@@ -366,6 +424,14 @@ button:focus-visible {
 .badge.link {
   color: var(--accent);
   text-decoration: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+button.badge.link {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
 }
 
 .badge.confidence.high {

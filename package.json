@@ -1,23 +1,30 @@
 {
   "name": "find-my-book",
   "private": true,
-  "version": "0.1.0",
-  "description": "책장 사진을 찍으면 책 제목을 인식해 목록으로 만들어 주는 앱",
+  "version": "0.2.0",
+  "description": "책장 사진을 찍으면 책등 글자를 읽어 책 목록을 만들어 주는 앱 (오픈소스 OCR)",
   "type": "module",
-  "workspaces": [
-    "server",
-    "web"
-  ],
   "scripts": {
-    "dev": "concurrently -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
-    "dev:server": "npm run dev --workspace server",
-    "dev:web": "npm run dev --workspace web",
-    "build": "npm run build --workspace web && npm run build --workspace server",
-    "start": "npm run start --workspace server",
-    "typecheck": "npm run typecheck --workspace server && npm run typecheck --workspace web"
+    "predev": "node scripts/copy-tesseract-assets.mjs",
+    "dev": "vite",
+    "prebuild": "node scripts/copy-tesseract-assets.mjs",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host",
+    "typecheck": "tsc -b --pretty",
+    "fetch:langdata": "node scripts/fetch-langdata.mjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "playwright": "^1.49.1",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
   },
   "engines": {
     "node": ">=20"

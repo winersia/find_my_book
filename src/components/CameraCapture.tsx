@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { downscaleToDataUrl } from "../lib/image";
+import { toWorkingCanvas } from "../lib/image";
 
 interface Props {
-  onCapture: (dataUrl: string) => void;
+  onCapture: (canvas: HTMLCanvasElement) => void;
   disabled: boolean;
   remaining: number;
 }
@@ -59,14 +59,14 @@ export function CameraCapture({ onCapture, disabled, remaining }: Props) {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     canvas.getContext("2d")?.drawImage(video, 0, 0);
-    onCapture(await downscaleToDataUrl(canvas));
+    onCapture(await toWorkingCanvas(canvas));
   }, [onCapture]);
 
   const pickFiles = useCallback(
     async (fileList: FileList | null) => {
       if (!fileList) return;
       for (const file of Array.from(fileList).slice(0, remaining)) {
-        onCapture(await downscaleToDataUrl(file));
+        onCapture(await toWorkingCanvas(file));
       }
       if (fileInputRef.current) fileInputRef.current.value = "";
     },
@@ -82,8 +82,8 @@ export function CameraCapture({ onCapture, disabled, remaining }: Props) {
             <span className="viewport-icon" aria-hidden="true">
               📚
             </span>
-            <p>책장이 한 화면에 들어오도록 찍어 주세요.</p>
-            <p className="hint">책등 글자가 또렷할수록 인식이 잘 됩니다.</p>
+            <p>책장 한 칸이 화면에 꽉 차게 찍어 주세요.</p>
+            <p className="hint">정면에서, 책등 글자가 또렷하게 보이도록 찍을수록 잘 읽습니다.</p>
           </div>
         )}
       </div>
