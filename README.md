@@ -41,6 +41,9 @@ VITE_TESSDATA_PATH=/tessdata npm run build
 OCR 워커와 wasm 코어는 이미 앱과 함께 배포됩니다. `npm install` 뒤 빌드할 때
 `scripts/copy-tesseract-assets.mjs`가 `public/tesseract`로 복사합니다.
 
+언어 데이터를 못 받으면(오프라인이거나 CDN이 막힌 경우) 화면에 그 사실과 함께
+위 명령을 안내합니다. 기다리다 멈춰 있지 않습니다.
+
 ### 휴대폰에서 카메라 쓰기
 
 브라우저는 `localhost`가 아닌 주소에서 **HTTPS일 때만** 카메라를 열어 줍니다.
@@ -106,12 +109,24 @@ node bench/run.mjs --case ko-stacked          # 한 가지만
 node bench/segment.mjs bench/.cache/ko-stacked.png   # 책등 분할만 눈으로 확인
 ```
 
+`bench/flow.mjs`는 정확도가 아니라 **앱이 요청대로 도는지**를 봅니다.
+Chromium의 가짜 카메라에 합성 책장 영상을 물려, 카메라 켜기부터 촬영, 인식, 제목 고치기,
+서재에 담기, CSV 내려받기, 다시 열었을 때 남아 있는지까지 실제로 조작합니다.
+
+```bash
+npm run build && npm run preview              # 한 터미널에서
+node bench/flow.mjs                           # 다른 터미널에서 (12가지 점검)
+node bench/flow.mjs --case ko-stacked
+```
+
 남은 한계:
 
 - 짧은 제목("총 균 쇠")이나 좁은 책등은 아직 놓칩니다.
 - 두께가 비슷한 책이 이어지면 경계를 잘못 잡아 두 제목이 한 줄로 섞일 때가 있습니다.
 - 글자가 작거나 가려진 책등, 반사가 심한 표지는 놓칩니다.
 - Open Library는 한국어 도서 수록이 고르지 않아 표지가 안 붙는 책이 많습니다.
+- 정확도 수치는 모두 합성 사진 기준입니다. 실제 사진으로는 재 보지 않았습니다.
+- 실제 휴대폰 카메라로도 확인하지 않았습니다. 위 점검은 가짜 카메라 장치를 씁니다.
 
 ### 잘 찍는 요령
 

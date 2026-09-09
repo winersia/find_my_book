@@ -51,6 +51,12 @@ const VERTICAL_LANG = "kor_vert";
 const VERTICAL_RETRY_SCORE = 70;
 /** 점수를 낼 때 한글 음절 하나를 라틴 글자 몇 개로 칠지 */
 const HANGUL_WEIGHT = 1.6;
+/**
+ * 언어 데이터를 받는 데 이만큼 걸리면 실패로 본다.
+ * tesseract.js 는 내려받기가 막혀도 예외를 던지지 않고 그대로 멈춰 있어서,
+ * 이 시간을 두지 않으면 화면이 "읽는 중"에서 영원히 돌아간다.
+ */
+const MODEL_TIMEOUT_MS = 90_000;
 
 let cached: { langs: string; worker: Worker } | null = null;
 let cachedVertical: Worker | null = null;
@@ -84,25 +90,53 @@ async function getVerticalWorker(onProgress?: (p: ScanProgress) => void): Promis
   }
 }
 
+/** 정해진 시간 안에 끝나지 않으면 실패로 처리한다. */
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function spawn(
   langs: string,
   psm: PSM,
   onProgress?: (p: ScanProgress) => void,
 ): Promise<Worker> {
-  const worker = await createWorker(langs, 1, {
+  const creating = createWorker(langs, 1, {
     // 워커와 wasm 코어는 앱과 함께 배포한다 (scripts/copy-tesseract-assets.mjs).
     // CDN에 의존하면 오프라인에서 못 쓰고, 경로가 어긋나면 통째로 실패한다.
     workerPath: `${assetBase()}tesseract/worker.min.js`,
     corePath: `${assetBase()}tesseract/`,
-    // 언어 데이터는 기본적으로 공개 CDN에서 받는다.
+    // 언어 데이터 경로를 넘기지 않으면 tesseract.js 가 언어별 CDN 경로를 알아서 쓴다.
+    // (LSTM 전용 모델이라 영어 기준 3MB 남짓. 직접 지정하면 8비트가 아닌 큰 모델을 받게 된다.)
     // npm run fetch:langdata 로 받아 두고 VITE_TESSDATA_PATH=/tessdata 를 주면 완전 오프라인이 된다.
-    langPath: import.meta.env.VITE_TESSDATA_PATH || "https://tessdata.projectnaptha.com/4.0.0",
+    ...(import.meta.env.VITE_TESSDATA_PATH ? { langPath: import.meta.env.VITE_TESSDATA_PATH } : {}),
     logger: (message: { status?: string; progress?: number }) => {
       if (message.status?.includes("load") || message.status?.includes("initializ")) {
         onProgress?.({ phase: "글자 인식 모델 준비 중", done: message.progress ?? 0, total: 1 });
       }
     },
   });
+
+  const worker = await withTimeout(
+    creating,
+    MODEL_TIMEOUT_MS,
+    "글자 인식 모델을 내려받지 못했습니다. 인터넷 연결을 확인해 주세요. " +
+      "(오프라인으로 쓰려면 npm run fetch:langdata 로 받아 두세요)",
+  ).catch((error: unknown) => {
+    // 늦게라도 워커가 만들어지면 메모리에 남지 않도록 정리한다.
+    void creating.then((late) => late.terminate()).catch(() => {});
+    throw error;
+  });
+
   await worker.setParameters({ tessedit_pageseg_mode: psm });
   return worker;
 }

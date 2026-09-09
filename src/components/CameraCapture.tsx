@@ -12,18 +12,22 @@ export function CameraCapture({ onCapture, disabled, remaining }: Props) {
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [active, setActive] = useState(false);
+  /** 첫 프레임이 들어오기 전에는 찍어도 빈 사진이 된다. 그 사이 버튼을 막는다. */
+  const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const stop = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     setActive(false);
+    setReady(false);
   }, []);
 
   useEffect(() => stop, [stop]);
 
   const start = useCallback(async () => {
     setError(null);
+    setReady(false);
     if (!navigator.mediaDevices?.getUserMedia) {
       setError("이 브라우저에서는 카메라를 열 수 없습니다. 아래에서 사진을 선택해 주세요.");
       return;
@@ -48,6 +52,7 @@ export function CameraCapture({ onCapture, disabled, remaining }: Props) {
         "카메라를 사용할 수 없습니다. 권한을 확인하거나, HTTPS 주소에서 열어 주세요. 아래에서 사진을 선택할 수도 있습니다.",
       );
       setActive(false);
+      setReady(false);
     }
   }, []);
 
@@ -76,7 +81,12 @@ export function CameraCapture({ onCapture, disabled, remaining }: Props) {
   return (
     <section className="camera">
       <div className={`viewport ${active ? "live" : ""}`}>
-        <video ref={videoRef} playsInline muted />
+        <video
+          ref={videoRef}
+          playsInline
+          muted
+          onLoadedMetadata={(event) => setReady(event.currentTarget.videoWidth > 0)}
+        />
         {!active && (
           <div className="viewport-placeholder">
             <span className="viewport-icon" aria-hidden="true">
@@ -93,8 +103,8 @@ export function CameraCapture({ onCapture, disabled, remaining }: Props) {
       <div className="camera-actions">
         {active ? (
           <>
-            <button type="button" className="primary" onClick={shoot} disabled={disabled}>
-              촬영
+            <button type="button" className="primary" onClick={shoot} disabled={disabled || !ready}>
+              {ready ? "촬영" : "준비 중…"}
             </button>
             <button type="button" onClick={stop}>
               카메라 끄기
