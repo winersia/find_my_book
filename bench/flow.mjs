@@ -176,6 +176,13 @@ check(
 const matched = recognized.map(matchIndex).filter((index) => index >= 0);
 const inOrder = matched.every((value, index) => index === 0 || value >= matched[index - 1]);
 check("꽂힌 순서 그대로 읽는다", inOrder && matched.length >= 3, `자리 ${matched.join(",")}`);
+
+const exactTitles = recognized.filter((text, index) => norm(text) === norm(SLOT_TITLES[index] ?? ""));
+check(
+  "제목 글자까지 맞는 것이 대부분이다",
+  exactTitles.length >= SLOT_TITLES.length - 1,
+  `${exactTitles.length}/${SLOT_TITLES.length}권이 글자까지 일치`,
+);
 check(
   "칸에 넣으면 권수와 순서가 인식 결과와 같다",
   placed.length === recognized.length &&

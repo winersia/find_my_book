@@ -49,6 +49,11 @@ export interface SegmentOptions {
   sideInset?: number;
   /** 크롭한 책등의 목표 너비(px). 글자 크기를 OCR이 좋아하는 범위로 맞춘다. */
   targetSpineWidth?: number;
+  /**
+   * 책이 차지하는 세로 구간을 찾은 뒤 더 깎을 비율. 음수면 바깥으로 넓힌다.
+   * 이 방향이 글자가 흐르는 방향이라 안쪽으로 깎으면 첫 글자와 끝 글자가 잘린다.
+   */
+  extentMargin?: number;
   /** 최대 밴드 수 */
   maxBands?: number;
   /** 경계 점수 프로파일을 함께 돌려준다 (bench/segment.mjs 진단용) */
@@ -63,6 +68,7 @@ const DEFAULTS = {
   relScore: 0.35,
   sideInset: 0.08,
   targetSpineWidth: 150,
+  extentMargin: -0.02,
   maxBands: 24,
   debug: false,
 } satisfies Required<SegmentOptions>;
@@ -128,7 +134,8 @@ export function segmentSpines(source: HTMLCanvasElement, options: SegmentOptions
     if (ink / width < 0.02) continue;
 
     const inset = Math.round(width * opts.sideInset);
-    const extent = rowExtent(gray, aw, ah, x0 + inset, x1 - inset);
+    const extent = rowExtent(gray, aw, ah, x0 + inset, x1 - inset, opts.extentMargin);
+    const color = bandColor(pixels, aw, x0 + inset, x1 - inset, extent.top, extent.bottom);
 
     bands.push({
       ...cropBand(source, {
@@ -140,7 +147,7 @@ export function segmentSpines(source: HTMLCanvasElement, options: SegmentOptions
         originalX1: x1 * scale,
         targetWidth: opts.targetSpineWidth,
       }),
-      color: bandColor(pixels, aw, x0 + inset, x1 - inset, extent.top, extent.bottom),
+      color,
       widthRatio: width / aw,
       ink: ink / width,
     });
@@ -380,7 +387,14 @@ function smooth(values: Float32Array, radius: number): Float32Array {
 }
 
 /** 밴드 안에서 책이 실제로 차지하는 위/아래 경계를 찾는다. */
-function rowExtent(gray: Float32Array, w: number, h: number, x0: number, x1: number) {
+function rowExtent(
+  gray: Float32Array,
+  w: number,
+  h: number,
+  x0: number,
+  x1: number,
+  margin: number,
+) {
   const rows = new Float32Array(h);
   for (let y = 0; y < h; y++) {
     let sum = 0;
@@ -405,8 +419,12 @@ function rowExtent(gray: Float32Array, w: number, h: number, x0: number, x1: num
   // 책을 못 찾았으면 통째로 쓴다.
   if (bottom - top < h * 0.3) return { top: 0, bottom: h - 1 };
 
-  const margin = Math.round((bottom - top) * 0.015);
-  return { top: Math.min(h - 1, top + margin), bottom: Math.max(0, bottom - margin) };
+  // margin 이 음수면 바깥쪽으로 넓힌다. 글자 끝이 잘리는 것을 막는다.
+  const pixels = Math.round((bottom - top) * margin);
+  return {
+    top: Math.min(h - 1, Math.max(0, top + pixels)),
+    bottom: Math.max(0, Math.min(h - 1, bottom - pixels)),
+  };
 }
 
 interface CropSpec {

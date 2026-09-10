@@ -53,6 +53,8 @@ const VERTICAL_LANG = "kor_vert";
  * 항상 읽으면 영문 책장에서 시간만 50% 더 든다.
  */
 const VERTICAL_RETRY_SCORE = 70;
+/** 제목 앞뒤의 짧은 조각을 군더더기로 볼 신뢰도 기준 */
+const EDGE_NOISE_CONFIDENCE = 55;
 /** 점수를 낼 때 한글 음절 하나를 라틴 글자 몇 개로 칠지 */
 const HANGUL_WEIGHT = 1.6;
 /**
@@ -195,7 +197,7 @@ export async function readShelf(
     // 돌려 읽은 결과가 시원찮으면 세로로 쌓인 한글일 수 있다. 그런 책등만 한 번 더 읽는다.
     const weak = (candidates[0]?.score ?? 0) < VERTICAL_RETRY_SCORE;
     if (verticalWorker && (verticalMode === "always" || weak)) {
-      candidates.push(await readVariant(verticalWorker, band.upright));
+      candidates.push(await readVariant(verticalWorker, band.upright, true));
       candidates.sort((a, b) => b.score - a.score);
     }
 
@@ -230,11 +232,43 @@ interface Candidate {
   score: number;
 }
 
-async function readVariant(worker: Worker, variant: SpineVariant): Promise<Candidate> {
+/**
+ * @param stacked 세로로 쌓인 글자를 읽은 것인지.
+ *   쌓인 글자에는 띄어쓰기가 없다. 모델이 음절 사이에 넣은 공백은 전부 군더더기다.
+ */
+async function readVariant(
+  worker: Worker,
+  variant: SpineVariant,
+  stacked = false,
+): Promise<Candidate> {
   const { data } = await worker.recognize(variant.canvas, {}, { blocks: true, text: true });
   const words = collectWords(data.blocks);
   const raw = (data.text ?? "").replace(/\s+/g, " ").trim();
-  return { text: cleanText(raw), raw, score: scoreWords(words) };
+  const trimmed = trimEdgeNoise(words) || raw;
+  const text = cleanText(stacked ? trimmed.replace(/\s+/g, "") : trimmed);
+  return { text, raw, score: scoreWords(words) };
+}
+
+/**
+ * 제목 앞뒤에 붙은 짧은 오독을 떼어낸다.
+ * 옆 책 그림자나 책등 끝의 무늬가 "UN", "55덱" 같은 조각으로 읽히는 일이 잦다.
+ * 가운데 글자는 건드리지 않는다. 확신이 낮아도 제목의 일부일 수 있다.
+ */
+function trimEdgeNoise(words: LooseWord[]): string {
+  const isNoise = (word: LooseWord | undefined) => {
+    if (!word) return false;
+    const text = (word.text ?? "").trim();
+    const letters = (text.match(/[A-Za-z가-힣0-9]/g) ?? []).length;
+    return letters > 0 && letters <= 3 && (word.confidence ?? 0) < EDGE_NOISE_CONFIDENCE;
+  };
+
+  let start = 0;
+  let end = words.length;
+  while (start < end && isNoise(words[start])) start++;
+  while (end > start && isNoise(words[end - 1])) end--;
+
+  const kept = words.slice(start, end).map((word) => (word.text ?? "").trim());
+  return kept.join(" ").replace(/\s+/g, " ").trim();
 }
 
 /** 분할 실패 시: 사진 전체를 0/90/-90도로 읽고 줄마다 후보를 만든다. */

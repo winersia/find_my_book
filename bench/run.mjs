@@ -24,6 +24,7 @@ const only = valueOf("--case");
 const langsOverride = valueOf("--langs");
 const verticalMode = valueOf("--vertical");
 const spineWidth = valueOf("--spine-width");
+const segmentOverride = valueOf("--segment");
 const keepImages = args.includes("--keep-images");
 
 function valueOf(flag) {
@@ -50,7 +51,8 @@ async function koreanFontFace() {
   };
 }
 
-const normalize = (value) => value.toLowerCase().replace(/[^a-z0-9가-힣]/g, "");
+const norm = (value) => value.toLowerCase().replace(/[^a-z0-9가-힣]/g, "");
+const normalize = norm;
 
 function levenshtein(a, b) {
   let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
@@ -103,7 +105,19 @@ function grade(truth, readings) {
   return truth.map((title) => {
     const primary = best(primaryTexts, title);
     const any = best(allTexts, title);
-    return { title, score: primary.score, text: primary.text, anyScore: any.score, anyText: any.text };
+    // 글자 오류율: 정답 제목을 그대로 맞추려면 몇 글자를 고쳐야 하는가 (0이면 완벽)
+    const cer = primary.text
+      ? levenshtein(norm(primary.text), norm(title)) / Math.max(1, norm(title).length)
+      : 1;
+    return {
+      title,
+      score: primary.score,
+      text: primary.text,
+      anyScore: any.score,
+      anyText: any.text,
+      exact: Boolean(primary.text) && norm(primary.text) === norm(title),
+      cer,
+    };
   });
 }
 
@@ -141,12 +155,21 @@ for (const testCase of CASES) {
   const langs = langsOverride ?? (testCase.korean ? "kor+eng" : "eng");
   const result = await app.evaluate(
     ([url, options]) => window.__bench(url, options),
-    [dataUrl, { langs, ...(verticalMode ? { verticalMode } : {}), ...(spineWidth ? { segment: { targetSpineWidth: Number(spineWidth) } } : {}) }],
+    [dataUrl, { langs, ...(verticalMode ? { verticalMode } : {}), segment: {
+        ...(spineWidth ? { targetSpineWidth: Number(spineWidth) } : {}),
+        ...(segmentOverride ? JSON.parse(segmentOverride) : {}),
+      } }],
   );
 
   const graded = grade(testCase.titles, result.readings);
   const hits = graded.filter((g) => g.score >= 0.7).length;
   const reachable = graded.filter((g) => g.anyScore >= 0.7).length;
+  const exact = graded.filter((g) => g.exact).length;
+  // 찾긴 찾은 제목들만 놓고 글자가 얼마나 틀렸는지 본다
+  const found = graded.filter((g) => g.score >= 0.7);
+  const meanCer = found.length
+    ? found.reduce((sum, g) => sum + g.cer, 0) / found.length
+    : 1;
 
   console.log(`\n■ ${testCase.label} (${testCase.id}, ${langs}${verticalMode ? `, 세로=${verticalMode}` : ""})`);
   console.log(
@@ -154,15 +177,21 @@ for (const testCase of CASES) {
       `${(result.elapsedMs / 1000).toFixed(0)}초 · 기울기 ${result.tiltDeg.toFixed(1)}° · 인식 ${result.readings.length}건` +
       (result.usedFallback ? " · 폴백" : ""),
   );
+  console.log(
+    `  제목 글자: 정확히 일치 ${exact}/${testCase.titles.length} · 찾은 것들의 평균 글자 오류율 ${(meanCer * 100).toFixed(0)}%`,
+  );
   for (const g of graded) {
-    const mark = g.score >= 0.7 ? "O" : g.anyScore >= 0.7 ? "^" : "X";
+    const mark = g.exact ? "=" : g.score >= 0.7 ? "O" : g.anyScore >= 0.7 ? "^" : "X";
     const shown = g.score >= 0.7 ? g.text : g.anyScore >= 0.7 ? `${g.anyText} (후보)` : g.text || "(못 읽음)";
-    console.log(`   ${mark} ${g.title.padEnd(18)} ← ${shown}`);
+    const detail = g.score >= 0.7 && !g.exact ? ` (${(g.cer * 100).toFixed(0)}%)` : "";
+    console.log(`   ${mark} ${g.title.padEnd(18)} ← ${shown}${detail}`);
   }
   summary.push({
     id: testCase.id,
     hits,
     reachable,
+    exact,
+    meanCer,
     total: testCase.titles.length,
     seconds: result.elapsedMs / 1000,
   });
@@ -173,7 +202,8 @@ for (const testCase of CASES) {
 console.log("\n=== 요약 ===");
 for (const row of summary) {
   console.log(
-    `  ${row.id.padEnd(12)} 바로 ${row.hits}/${row.total} · 후보 포함 ${row.reachable}/${row.total} · ${row.seconds.toFixed(0)}초`,
+    `  ${row.id.padEnd(12)} 바로 ${row.hits}/${row.total} · 후보 포함 ${row.reachable}/${row.total} · ` +
+      `글자 일치 ${row.exact}/${row.total} · 오류율 ${(row.meanCer * 100).toFixed(0)}% · ${row.seconds.toFixed(0)}초`,
   );
 }
 
