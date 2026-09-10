@@ -16,6 +16,12 @@ export interface SpineBand {
   /** 원본 이미지 기준 좌우 경계 */
   x0: number;
   x1: number;
+  /** 책등 대표 색 (#rrggbb). 앱 책장에 실제와 닮은 색으로 그리기 위해 뽑는다. */
+  color: string;
+  /** 사진 가로 대비 이 책등의 두께 비율 */
+  widthRatio: number;
+  /** 이 구간에 글자·무늬가 얼마나 있는지 (0~1). 배경 조각을 가려낼 때 쓴다. */
+  ink: number;
   /** 돌려 세운 두 방향의 크롭. 책등 글자는 위→아래거나 아래→위다. */
   variants: SpineVariant[];
   /** 돌리지 않은 크롭. 한글 책등에 흔한 세로로 쌓은 글자를 읽을 때 쓴다. */
@@ -124,8 +130,8 @@ export function segmentSpines(source: HTMLCanvasElement, options: SegmentOptions
     const inset = Math.round(width * opts.sideInset);
     const extent = rowExtent(gray, aw, ah, x0 + inset, x1 - inset);
 
-    bands.push(
-      cropBand(source, {
+    bands.push({
+      ...cropBand(source, {
         x0: (x0 + inset) * scale,
         x1: (x1 - inset) * scale,
         top: extent.top * scale,
@@ -134,7 +140,10 @@ export function segmentSpines(source: HTMLCanvasElement, options: SegmentOptions
         originalX1: x1 * scale,
         targetWidth: opts.targetSpineWidth,
       }),
-    );
+      color: bandColor(pixels, aw, x0 + inset, x1 - inset, extent.top, extent.bottom),
+      widthRatio: width / aw,
+      ink: ink / width,
+    });
   }
 
   return {
@@ -411,7 +420,7 @@ interface CropSpec {
 }
 
 /** 책등을 잘라 ±90도로 세운 캔버스 두 장을 만든다. */
-function cropBand(source: HTMLCanvasElement, spec: CropSpec): SpineBand {
+function cropBand(source: HTMLCanvasElement, spec: CropSpec): Omit<SpineBand, "color" | "widthRatio" | "ink"> {
   const width = Math.max(1, Math.round(spec.x1 - spec.x0));
   const height = Math.max(1, Math.round(spec.bottom - spec.top));
   const scale = Math.min(4, Math.max(1, spec.targetWidth / width));
@@ -438,6 +447,40 @@ function cropBand(source: HTMLCanvasElement, spec: CropSpec): SpineBand {
     variants: [draw(90), draw(-90)],
     upright: draw(0),
   };
+}
+
+/**
+ * 책등의 대표 색. 글자에 흔들리지 않게 중앙값을 쓴다.
+ * 평균을 쓰면 흰 글자가 많은 책등이 실제보다 밝게 나온다.
+ */
+function bandColor(
+  pixels: Uint8ClampedArray,
+  w: number,
+  x0: number,
+  x1: number,
+  top: number,
+  bottom: number,
+): string {
+  const samples: number[][] = [[], [], []];
+  const stepX = Math.max(1, Math.round((x1 - x0) / 12));
+  const stepY = Math.max(1, Math.round((bottom - top) / 60));
+
+  for (let y = top; y < bottom; y += stepY) {
+    for (let x = x0; x < x1; x += stepX) {
+      const i = (y * w + x) * 4;
+      samples[0].push(pixels[i]);
+      samples[1].push(pixels[i + 1]);
+      samples[2].push(pixels[i + 2]);
+    }
+  }
+
+  const channel = (values: number[]) => {
+    if (!values.length) return 128;
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  };
+  const hex = (value: number) => value.toString(16).padStart(2, "0");
+  return `#${hex(channel(samples[0]))}${hex(channel(samples[1]))}${hex(channel(samples[2]))}`;
 }
 
 /** 분할이 실패했을 때 쓸 전체 이미지 회전본 (정면 표지, 눕힌 책 대비) */

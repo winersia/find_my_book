@@ -1,5 +1,5 @@
 import { similarity } from "./text";
-import type { BookMatch, RecognizedBook } from "./types";
+import type { BookMatch } from "./types";
 
 const SEARCH_URL = "https://openlibrary.org/search.json";
 const TIMEOUT_MS = 7000;
@@ -16,11 +16,19 @@ interface OpenLibraryDoc {
   key?: string;
 }
 
+/** 제목 보정에 필요한 최소한의 모양. 책장에 꽂힌 책이든 인식 직후 결과든 이 모양이면 된다. */
+interface Enrichable {
+  title: string;
+  author: string;
+  spineText: string;
+  match?: BookMatch;
+}
+
 /**
  * OCR로 읽은 제목을 Open Library에서 찾아 정식 제목으로 고치고 표지를 붙인다.
  * 오탈자 교정 역할도 한다. 네트워크가 막혀 있으면 조용히 원본을 그대로 둔다.
  */
-export async function enrichBooks(books: RecognizedBook[]): Promise<RecognizedBook[]> {
+export async function enrichBooks<T extends Enrichable>(books: T[]): Promise<T[]> {
   const result = [...books];
   let cursor = 0;
 

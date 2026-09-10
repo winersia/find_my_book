@@ -1,51 +1,57 @@
-import { useCallback, useEffect, useState } from "react";
-import { CameraCapture } from "./components/CameraCapture";
-import { Library } from "./components/Library";
-import { ScanResults } from "./components/ScanResults";
-import { enrichBooks } from "./lib/enrich";
-import { toThumbnail } from "./lib/image";
-import { readShelf, type ScanProgress } from "./lib/ocr";
-import { loadLibrary, mergeIntoLibrary, saveLibrary } from "./lib/storage";
-import { normalize } from "./lib/text";
-import type { RecognizedBook, SavedBook } from "./lib/types";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { BookcaseSetup } from "./components/BookcaseSetup";
+import { BookcaseView } from "./components/BookcaseView";
+import { ScanSheet } from "./components/ScanSheet";
+import { SlotPanel } from "./components/SlotPanel";
+import {
+  DEFAULT_COLUMNS,
+  DEFAULT_ROWS,
+  addBook,
+  clearSlot,
+  countBooks,
+  createBookcase,
+  download,
+  loadBookcases,
+  moveBook,
+  moveBookToSlot,
+  removeBook,
+  resizeBookcase,
+  saveBookcases,
+  setSlotBooks,
+  slotLabel,
+  toCsv,
+  updateBook,
+  type Bookcase,
+  type ShelfBook,
+} from "./lib/bookcase";
 
-const MAX_SHOTS = 4;
 const SETTINGS_KEY = "find-my-book:settings:v1";
 
-type Tab = "scan" | "library";
-
-interface Shot {
-  canvas: HTMLCanvasElement;
-  thumb: string;
-}
-
 interface Settings {
-  /** tesseract 언어 데이터 */
   langs: "kor+eng" | "eng";
-  /** Open Library로 제목을 보정할지 */
   enrich: boolean;
 }
 
-interface ScanOutcome {
-  books: RecognizedBook[];
-  imageCount: number;
-  elapsedMs: number;
-  usedFallback: boolean;
-}
+type Screen = "setup" | "bookcase";
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("scan");
-  const [shots, setShots] = useState<Shot[]>([]);
+  const [bookcases, setBookcases] = useState<Bookcase[]>([]);
+  const [currentId, setCurrentId] = useState<string | null>(null);
+  const [screen, setScreen] = useState<Screen>("setup");
+  /** 칸 수를 바꾸는 중인지 (새로 만드는 것과 구분) */
+  const [resizing, setResizing] = useState(false);
+  const [selected, setSelected] = useState<number | null>(null);
   const [scanning, setScanning] = useState(false);
-  const [progress, setProgress] = useState<(ScanProgress & { image: number; images: number }) | null>(null);
-  const [result, setResult] = useState<ScanOutcome | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [library, setLibrary] = useState<SavedBook[]>([]);
   const [settings, setSettings] = useState<Settings>({ langs: "kor+eng", enrich: true });
 
   useEffect(() => {
-    setLibrary(loadLibrary());
+    const stored = loadBookcases();
+    setBookcases(stored);
+    if (stored.length > 0) {
+      setCurrentId(stored[0].id);
+      setScreen("bookcase");
+    }
     try {
       const raw = localStorage.getItem(SETTINGS_KEY);
       if (raw) setSettings((previous) => ({ ...previous, ...(JSON.parse(raw) as Partial<Settings>) }));
@@ -60,6 +66,20 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [toast]);
 
+  const current = useMemo(
+    () => bookcases.find((bookcase) => bookcase.id === currentId) ?? null,
+    [bookcases, currentId],
+  );
+
+  /** 책장 하나를 바꾸고 곧바로 저장한다. 편집 결과가 새로고침에도 남아야 한다. */
+  const commit = useCallback((id: string, change: (bookcase: Bookcase) => Bookcase) => {
+    setBookcases((previous) => {
+      const next = previous.map((bookcase) => (bookcase.id === id ? change(bookcase) : bookcase));
+      saveBookcases(next);
+      return next;
+    });
+  }, []);
+
   const updateSettings = useCallback((patch: Partial<Settings>) => {
     setSettings((previous) => {
       const next = { ...previous, ...patch };
@@ -72,225 +92,234 @@ export default function App() {
     });
   }, []);
 
-  const addShot = useCallback((canvas: HTMLCanvasElement) => {
-    setError(null);
-    setShots((previous) =>
-      previous.length >= MAX_SHOTS ? previous : [...previous, { canvas, thumb: toThumbnail(canvas) }],
-    );
-  }, []);
-
-  const runScan = useCallback(async () => {
-    if (shots.length === 0) return;
-    setScanning(true);
-    setError(null);
-    const startedAt = Date.now();
-
-    try {
-      const collected: RecognizedBook[] = [];
-      let usedFallback = false;
-
-      for (const [index, shot] of shots.entries()) {
-        const outcome = await readShelf(shot.canvas, {
-          langs: settings.langs,
-          onProgress: (p) => setProgress({ ...p, image: index + 1, images: shots.length }),
+  const confirmSetup = useCallback(
+    (name: string, columns: number, rows: number) => {
+      if (resizing && current) {
+        commit(current.id, (bookcase) => ({ ...resizeBookcase(bookcase, columns, rows), name }));
+        setResizing(false);
+        setSelected(null);
+        setToast("책장 칸 수를 바꿨어요.");
+      } else {
+        const bookcase = createBookcase(name, columns, rows);
+        setBookcases((previous) => {
+          const next = [...previous, bookcase];
+          saveBookcases(next);
+          return next;
         });
-        usedFallback = usedFallback || outcome.usedFallback;
-
-        for (const reading of outcome.readings) {
-          collected.push({
-            title: reading.text,
-            author: "",
-            spineText: reading.raw,
-            alternatives: reading.alternatives,
-            confidence: reading.confidence,
-          });
-        }
+        setCurrentId(bookcase.id);
+        setToast(`${bookcase.name}을(를) 만들었어요. 칸을 눌러 채워 보세요.`);
       }
-
-      const merged = mergeDuplicates(collected);
-      setProgress({ phase: "제목 확인하는 중", done: 0, total: 1, image: shots.length, images: shots.length });
-      const books = settings.enrich ? await enrichBooks(merged) : merged;
-
-      setResult({
-        books,
-        imageCount: shots.length,
-        elapsedMs: Date.now() - startedAt,
-        usedFallback,
-      });
-    } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? `인식에 실패했습니다: ${caught.message}`
-          : "인식에 실패했습니다.",
-      );
-    } finally {
-      setScanning(false);
-      setProgress(null);
-    }
-  }, [settings.enrich, settings.langs, shots]);
-
-  const reset = useCallback(() => {
-    setShots([]);
-    setResult(null);
-    setError(null);
-  }, []);
-
-  const saveToLibrary = useCallback(
-    (books: RecognizedBook[]) => {
-      setLibrary((previous) => {
-        const merged = mergeIntoLibrary(previous, books);
-        saveLibrary(merged.library);
-        setToast(
-          merged.skipped > 0
-            ? `${merged.added}권 담았어요. 이미 있는 ${merged.skipped}권은 건너뛰었습니다.`
-            : `${merged.added}권을 서재에 담았어요.`,
-        );
-        return merged.library;
-      });
-      reset();
-      setTab("library");
+      setScreen("bookcase");
     },
-    [reset],
+    [commit, current, resizing],
   );
 
-  const removeBook = useCallback((id: string) => {
-    setLibrary((previous) => {
-      const next = previous.filter((book) => book.id !== id);
-      saveLibrary(next);
+  const applyScan = useCallback(
+    (books: ShelfBook[], photo: string) => {
+      if (!current || selected === null) return;
+      commit(current.id, (bookcase) => setSlotBooks(bookcase, selected, books, photo));
+      setScanning(false);
+      setToast(`${slotLabel(current, selected)}에 ${books.length}권을 넣었어요.`);
+    },
+    [commit, current, selected],
+  );
+
+  const removeBookcase = useCallback(() => {
+    if (!current) return;
+    if (!window.confirm(`${current.name}을(를) 지울까요? 담긴 책도 함께 사라집니다.`)) return;
+    setBookcases((previous) => {
+      const next = previous.filter((bookcase) => bookcase.id !== current.id);
+      saveBookcases(next);
+      setCurrentId(next[0]?.id ?? null);
+      setScreen(next.length > 0 ? "bookcase" : "setup");
       return next;
     });
-  }, []);
+    setSelected(null);
+  }, [current]);
 
-  const clearLibrary = useCallback(() => {
-    if (!confirm("서재의 모든 책을 지울까요? 되돌릴 수 없습니다.")) return;
-    setLibrary([]);
-    saveLibrary([]);
-  }, []);
+  if (screen === "setup" || !current) {
+    const editing = resizing && current ? current : undefined;
+    return (
+      <div className="app">
+        <Header title="책장 스캐너" />
+        <main>
+          <BookcaseSetup
+            existing={editing}
+            defaultName={editing?.name ?? (bookcases.length > 0 ? `책장 ${bookcases.length + 1}` : "내 책장")}
+            defaultColumns={editing?.columns ?? DEFAULT_COLUMNS}
+            defaultRows={editing?.rows ?? DEFAULT_ROWS}
+            onConfirm={confirmSetup}
+            onCancel={
+              bookcases.length > 0
+                ? () => {
+                    setResizing(false);
+                    setScreen("bookcase");
+                  }
+                : undefined
+            }
+          />
+        </main>
+        {toast && <Toast message={toast} />}
+      </div>
+    );
+  }
+
+  const total = countBooks(current);
 
   return (
     <div className="app">
-      <header className="app-header">
-        <h1>책장 스캐너</h1>
-        <nav className="tabs">
-          <button type="button" className={tab === "scan" ? "active" : ""} onClick={() => setTab("scan")}>
-            촬영
+      <Header title={current.name} subtitle={`${current.columns}×${current.rows}칸 · ${total}권`}>
+        {bookcases.length > 1 && (
+          <select
+            className="bookcase-switch"
+            value={current.id}
+            onChange={(event) => {
+              setCurrentId(event.target.value);
+              setSelected(null);
+            }}
+            aria-label="책장 고르기"
+          >
+            {bookcases.map((bookcase) => (
+              <option value={bookcase.id} key={bookcase.id}>
+                {bookcase.name}
+              </option>
+            ))}
+          </select>
+        )}
+      </Header>
+
+      <main>
+        <BookcaseView
+          bookcase={current}
+          selected={selected}
+          onSelect={(index) => setSelected(index === selected ? null : index)}
+        />
+
+        {selected === null ? (
+          <p className="notes" data-testid="pick-slot">
+            채우고 싶은 칸을 눌러 주세요. 칸마다 사진을 찍으면 그 칸에 꽂힌 순서 그대로 들어갑니다.
+          </p>
+        ) : (
+          <SlotPanel
+            bookcase={current}
+            index={selected}
+            onScan={() => setScanning(true)}
+            onUpdateBook={(bookId, patch) =>
+              commit(current.id, (bookcase) => updateBook(bookcase, selected, bookId, patch))
+            }
+            onRemoveBook={(bookId) =>
+              commit(current.id, (bookcase) => removeBook(bookcase, selected, bookId))
+            }
+            onMoveBook={(bookId, direction) =>
+              commit(current.id, (bookcase) => moveBook(bookcase, selected, bookId, direction))
+            }
+            onMoveToSlot={(bookId, target) =>
+              commit(current.id, (bookcase) => moveBookToSlot(bookcase, selected, bookId, target))
+            }
+            onAddBook={() => commit(current.id, (bookcase) => addBook(bookcase, selected))}
+            onClearSlot={() => commit(current.id, (bookcase) => clearSlot(bookcase, selected))}
+          />
+        )}
+
+        <section className="bookcase-tools">
+          <button
+            type="button"
+            onClick={() => {
+              setResizing(true);
+              setScreen("setup");
+            }}
+          >
+            칸 수 바꾸기
           </button>
           <button
             type="button"
-            className={tab === "library" ? "active" : ""}
-            onClick={() => setTab("library")}
+            onClick={() => {
+              setResizing(false);
+              setScreen("setup");
+            }}
           >
-            내 서재 {library.length > 0 && <span className="count">{library.length}</span>}
+            책장 추가
           </button>
-        </nav>
-      </header>
+          <button type="button" onClick={() => download("내책장.csv", toCsv(bookcases), "text/csv")}>
+            CSV 내려받기
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              download("내책장.json", JSON.stringify(bookcases, null, 2), "application/json")
+            }
+          >
+            JSON
+          </button>
+          <button type="button" className="danger" onClick={removeBookcase}>
+            이 책장 지우기
+          </button>
+        </section>
 
-      <main>
-        {tab === "library" ? (
-          <Library books={library} onRemove={removeBook} onClear={clearLibrary} />
-        ) : result ? (
-          <ScanResults
-            books={result.books}
-            imageCount={result.imageCount}
-            elapsedMs={result.elapsedMs}
-            usedFallback={result.usedFallback}
-            onSave={saveToLibrary}
-            onDiscard={reset}
-          />
-        ) : (
-          <>
-            <CameraCapture
-              onCapture={addShot}
-              disabled={scanning || shots.length >= MAX_SHOTS}
-              remaining={MAX_SHOTS - shots.length}
+        <section className="settings">
+          <label>
+            <span>인식 언어</span>
+            <select
+              value={settings.langs}
+              onChange={(event) => updateSettings({ langs: event.target.value as Settings["langs"] })}
+            >
+              <option value="kor+eng">한국어 + 영어</option>
+              <option value="eng">영어만 (빠름)</option>
+            </select>
+          </label>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={settings.enrich}
+              onChange={(event) => updateSettings({ enrich: event.target.checked })}
             />
-
-            {shots.length > 0 && (
-              <section className="shots">
-                <div className="thumbs">
-                  {shots.map((shot, index) => (
-                    <div className="thumb" key={index}>
-                      <img src={shot.thumb} alt={`촬영 ${index + 1}`} />
-                      <button
-                        type="button"
-                        className="remove"
-                        disabled={scanning}
-                        onClick={() => setShots((previous) => previous.filter((_, i) => i !== index))}
-                        aria-label={`${index + 1}번째 사진 삭제`}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                <p className="hint">
-                  넓은 책장은 칸별로 나눠 최대 {MAX_SHOTS}장까지 찍은 뒤 한 번에 읽을 수 있어요.
-                </p>
-                <button type="button" className="primary big" onClick={runScan} disabled={scanning}>
-                  {scanning ? "읽는 중…" : `사진 ${shots.length}장에서 목록 만들기`}
-                </button>
-              </section>
-            )}
-
-            {progress && (
-              <div className="progress" role="status">
-                <p>
-                  {progress.images > 1 && `사진 ${progress.image}/${progress.images} · `}
-                  {progress.phase}
-                  {progress.total > 1 && ` ${progress.done}/${progress.total}`}
-                </p>
-                <div className="bar">
-                  <span style={{ width: `${Math.round((progress.done / Math.max(1, progress.total)) * 100)}%` }} />
-                </div>
-                <p className="hint">글자 인식은 기기 안에서 처리합니다. 사진은 어디로도 전송되지 않아요.</p>
-              </div>
-            )}
-
-            {error && <p className="error">{error}</p>}
-
-            <section className="settings">
-              <label>
-                <span>인식 언어</span>
-                <select
-                  value={settings.langs}
-                  disabled={scanning}
-                  onChange={(event) => updateSettings({ langs: event.target.value as Settings["langs"] })}
-                >
-                  <option value="kor+eng">한국어 + 영어</option>
-                  <option value="eng">영어만 (빠름)</option>
-                </select>
-              </label>
-              <label className="checkbox">
-                <input
-                  type="checkbox"
-                  checked={settings.enrich}
-                  disabled={scanning}
-                  onChange={(event) => updateSettings({ enrich: event.target.checked })}
-                />
-                <span>Open Library로 제목 보정하기</span>
-              </label>
-            </section>
-          </>
-        )}
+            <span>Open Library로 제목 보정하기</span>
+          </label>
+        </section>
       </main>
 
-      {toast && (
-        <div className="toast" role="status">
-          {toast}
+      {scanning && selected !== null && (
+        <div className="sheet-backdrop">
+          <ScanSheet
+            label={slotLabel(current, selected)}
+            existingCount={current.slots[selected].books.length}
+            langs={settings.langs}
+            enrich={settings.enrich}
+            onApply={applyScan}
+            onClose={() => setScanning(false)}
+          />
         </div>
       )}
+
+      {toast && <Toast message={toast} />}
     </div>
   );
 }
 
-/** 사진 여러 장에 걸쳐 같은 책이 잡히면 신뢰도가 높은 쪽만 남긴다. */
-function mergeDuplicates(books: RecognizedBook[]): RecognizedBook[] {
-  const byKey = new Map<string, RecognizedBook>();
-  for (const book of books) {
-    const key = normalize(book.title);
-    if (!key) continue;
-    const existing = byKey.get(key);
-    if (!existing || book.confidence > existing.confidence) byKey.set(key, book);
-  }
-  return [...byKey.values()];
+function Header({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <header className="app-header">
+      <div>
+        <h1>{title}</h1>
+        {subtitle && <p className="meta">{subtitle}</p>}
+      </div>
+      {children}
+    </header>
+  );
+}
+
+function Toast({ message }: { message: string }) {
+  return (
+    <div className="toast" role="status">
+      {message}
+    </div>
+  );
 }

@@ -21,7 +21,7 @@ await page.waitForFunction(() => window.__ready === true, { timeout: 30000 });
 const dataUrl = `data:image/png;base64,${fs.readFileSync(file).toString("base64")}`;
 const result = await page.evaluate(([url, opts]) => window.__segment(url, opts), [dataUrl, options]);
 console.log(`밴드 ${result.bands.length}개 · 기울기 ${result.tiltDeg.toFixed(1)}° · ${result.width}x${result.height}`);
-console.log(result.bands.map((b) => `${b.x0}-${b.x1}`).join("  "));
+console.log(result.bands.map((b) => `${b.x0}-${b.x1}(잉크 ${b.ink?.toFixed(3)} ${b.color})`).join("  "));
 
 if (result.profile) {
   const { combined, run, color, scale } = result.profile;

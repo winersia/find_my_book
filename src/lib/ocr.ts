@@ -13,6 +13,10 @@ export interface SpineReading {
   raw: string;
   /** 0~1 */
   confidence: number;
+  /** 책등 대표 색 (#rrggbb) */
+  color: string;
+  /** 사진 가로 대비 책등 두께 비율 */
+  widthRatio: number;
 }
 
 export interface ScanProgress {
@@ -174,6 +178,12 @@ export async function readShelf(
   }
   const verticalWorker = wantsVertical ? await getVerticalWorker(onProgress) : null;
 
+  // 책장 양 끝의 배경 조각이나 책 사이 그림자는 밴드로 잡히지만 책이 아니다.
+  // 글자를 하나도 못 읽은 밴드는 두께로 가른다. 책이라면 다른 책과 두께가 비슷하다.
+  const widths = bands.map((band) => band.x1 - band.x0).sort((a, b) => a - b);
+  const medianWidth = widths[Math.floor(widths.length / 2)] ?? 0;
+  const minBookWidth = medianWidth * 0.5;
+
   const readings: SpineReading[] = [];
   for (const [index, band] of bands.entries()) {
     if (signal?.aborted) break;
@@ -190,10 +200,15 @@ export async function readShelf(
     }
 
     const best = candidates[0];
-    if (!best || !best.text) continue;
+    if (!best) continue;
+    // 제목을 못 읽었어도 두께가 책만 하면 자리를 남긴다.
+    // 실제 권수와 순서가 맞아야 나중에 손으로 고칠 수 있다.
+    if (!best.text && band.x1 - band.x0 < minBookWidth) continue;
     readings.push({
       x0: band.x0,
       x1: band.x1,
+      color: band.color,
+      widthRatio: band.widthRatio,
       text: best.text,
       raw: best.raw,
       alternatives: candidates
@@ -245,6 +260,8 @@ async function readWholeImage(
       readings.push({
         x0: 0,
         x1: 0,
+        color: "#6b6257",
+        widthRatio: 0,
         text,
         raw: line.text.replace(/\s+/g, " ").trim(),
         alternatives: [],

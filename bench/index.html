@@ -20,7 +20,7 @@
           width: canvas.width,
           height: canvas.height,
           tiltDeg: result.tiltDeg,
-          bands: result.bands.map((b) => ({ x0: b.x0, x1: b.x1 })),
+          bands: result.bands.map((b) => ({ x0: b.x0, x1: b.x1, ink: b.ink, color: b.color })),
           profile: result.profile,
         };
       };
