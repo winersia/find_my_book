@@ -21,12 +21,18 @@ interface Enrichable {
   title: string;
   author: string;
   spineText: string;
+  /** 다른 방향으로 읽은 후보들. 다듬은 제목으로 못 찾으면 이것도 넣어 본다. */
+  alternatives?: string[];
   match?: BookMatch;
 }
 
 /**
- * OCR로 읽은 제목을 Open Library에서 찾아 정식 제목으로 고치고 표지를 붙인다.
- * 오탈자 교정 역할도 한다. 네트워크가 막혀 있으면 조용히 원본을 그대로 둔다.
+ * Open Library에서 찾아 정식 제목과 표지, ISBN을 붙인다.
+ *
+ * 이건 맞춤법 교정기가 아니다. Open Library 검색은 낱말 검색이라
+ * "Refactorin" 처럼 한 글자가 틀리면 아무것도 찾지 못한다 (퍼지 검색도 없다).
+ * 제목이 이미 충분히 맞을 때 정식 표기로 다듬고 표지를 붙여 주는 역할이다.
+ * 네트워크가 막혀 있으면 조용히 원본을 그대로 둔다.
  */
 export async function enrichBooks<T extends Enrichable>(books: T[]): Promise<T[]> {
   const result = [...books];
@@ -36,7 +42,8 @@ export async function enrichBooks<T extends Enrichable>(books: T[]): Promise<T[]
     while (cursor < result.length) {
       const index = cursor++;
       const book = result[index];
-      const match = await lookup(book.spineText || book.title);
+      // 다듬은 제목이 가장 잘 찾힌다. 원문은 옆 책 글자가 섞여 있어 검색이 자주 빗나간다.
+      const match = await lookupAny([book.title, book.spineText, ...(book.alternatives ?? [])]);
       if (!match) continue;
       result[index] = {
         ...book,
@@ -50,6 +57,19 @@ export async function enrichBooks<T extends Enrichable>(books: T[]): Promise<T[]
 
   await Promise.all(workers);
   return result;
+}
+
+/** 여러 후보로 차례로 찾아보고 처음 걸리는 것을 쓴다. */
+async function lookupAny(queries: string[]): Promise<BookMatch | undefined> {
+  const seen = new Set<string>();
+  for (const query of queries) {
+    const key = query.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const match = await lookup(query);
+    if (match) return match;
+  }
+  return undefined;
 }
 
 async function lookup(query: string): Promise<BookMatch | undefined> {

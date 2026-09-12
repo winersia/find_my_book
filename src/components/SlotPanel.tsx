@@ -76,6 +76,13 @@ export function SlotPanel({
                 />
                 <div className="badges">
                   {book.confidence < LOW_CONFIDENCE && <span className="badge confidence low">확인 필요</span>}
+                  {book.match && (
+                    <span className="badge" data-testid="match-badge" title={book.match.title}>
+                      확인됨
+                      {book.match.firstPublishYear ? ` · ${book.match.firstPublishYear}` : ""}
+                      {book.match.isbn ? ` · ISBN ${book.match.isbn}` : ""}
+                    </span>
+                  )}
                   {book.spineText && book.spineText !== book.title && (
                     <span className="badge subtle">원문 “{book.spineText}”</span>
                   )}

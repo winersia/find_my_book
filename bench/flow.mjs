@@ -92,12 +92,26 @@ const builder = await chromium.launch({ executablePath: CHROMIUM });
 const videoFile = await buildFakeCamera(builder);
 await builder.close();
 
+/**
+ * 샌드박스에서 바깥 망을 쓰려면 프록시를 태워야 한다.
+ * 그 프록시는 TLS 를 다시 맺는데 크로미움의 TLS 1.3 핸드셰이크를 못 넘겨서 연결이 끊긴다.
+ * 1.2 로 낮추면 지나간다. 일반 사용 환경에는 필요 없는 설정이다.
+ */
+const sandboxNetwork = process.env.HTTPS_PROXY
+  ? {
+      proxy: { server: process.env.HTTPS_PROXY, bypass: "localhost,127.0.0.1" },
+      args: ["--ssl-version-max=tls1.2"],
+    }
+  : { args: [] };
+
 const browser = await chromium.launch({
   executablePath: CHROMIUM,
+  ...(sandboxNetwork.proxy ? { proxy: sandboxNetwork.proxy } : {}),
   args: [
     "--use-fake-ui-for-media-stream",
     "--use-fake-device-for-media-stream",
     `--use-file-for-fake-video-capture=${videoFile}`,
+    ...sandboxNetwork.args,
   ],
 });
 const context = await browser.newContext({ viewport: { width: 900, height: 900 } });
@@ -127,6 +141,7 @@ async function scanIntoSelectedSlot() {
   const recognized = await page.$$eval(".scan-preview .scan-title", (els) =>
     els.map((e) => e.textContent.trim()),
   );
+  console.log(`   인식: ${recognized.join(" / ")}`);
   await page.click('[data-testid="apply-scan"]');
   await page.waitForSelector('[data-testid="scan-sheet"]', { state: "detached" });
   return recognized;
@@ -190,6 +205,16 @@ check(
   `칸 ${placed.length}권: ${placed.join(" / ")}`,
 );
 check("다른 칸은 비어 있다", (await slotCount(1)) === 0 && (await slotCount(5)) === 0);
+
+// Open Library 보정이 실제로 걸렸는지 (네트워크가 있을 때만 확인)
+const matchBadges = await page.$$eval('[data-testid="match-badge"]', (els) =>
+  els.map((e) => e.textContent.trim()),
+);
+if (process.env.HTTPS_PROXY || process.env.FLOW_EXPECT_NETWORK) {
+  check("Open Library 보정이 붙는다", matchBadges.length > 0, matchBadges.join(" / ") || "붙은 것 없음");
+} else {
+  console.log("  (건너뜀) Open Library 보정 — 이 실행에는 바깥 망이 없음");
+}
 
 // 7. 순서를 바꾸면 책장 그림에도 반영된다
 const spinesBefore = await page.$$eval('[data-slot="0"] .spine', (els) => els.map((e) => e.title));
