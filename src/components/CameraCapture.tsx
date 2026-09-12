@@ -98,15 +98,14 @@ export function CameraCapture({ onCapture, disabled, remaining, autoStart = fals
         <video ref={videoRef} playsInline muted onLoadedMetadata={(e) => setReady(e.currentTarget.videoWidth > 0)} />
         {active ? (
           <div className="frame-guide" aria-hidden="true">
-            <span>이 틀에 칸을 꽉 채워 주세요</span>
+            <span>칸을 꽉 채워 주세요</span>
           </div>
         ) : (
           <div className="viewport-placeholder">
             <span className="viewport-icon" aria-hidden="true">
-              📚
+              📷
             </span>
-            <p>칸 하나를 정면에서</p>
-            <p className="hint">책등 글자가 또렷할수록 잘 읽습니다</p>
+            <p className="hint">칸 하나를 정면에서</p>
           </div>
         )}
       </div>
@@ -116,9 +115,8 @@ export function CameraCapture({ onCapture, disabled, remaining, autoStart = fals
       {active ? (
         <div className="shutter-row">
           {/* 카메라가 흐리거나 이미 찍어 둔 사진을 쓰고 싶을 때를 위해 옆에 남겨 둔다. */}
-          <button type="button" className="ghost" onClick={() => fileInputRef.current?.click()}>
-            사진 고르기
-          </button>
+          {/* 셔터가 화면 한가운데 오도록 양옆에 같은 무게를 둔다. */}
+          <span aria-hidden="true" />
           <button
             type="button"
             className="shutter"
@@ -127,10 +125,11 @@ export function CameraCapture({ onCapture, disabled, remaining, autoStart = fals
             aria-label={ready ? "촬영" : "카메라 준비 중"}
           >
             <span className="shutter-ring" aria-hidden="true" />
-            <span className="shutter-label">{ready ? "촬영" : "준비 중…"}</span>
+            {/* 큰 원형 셔터는 사진 앱에서 배운 모양이다. 이름표는 준비 중일 때만 필요하다. */}
+            {!ready && <span className="shutter-label">준비 중…</span>}
           </button>
-          <button type="button" className="ghost" onClick={stop}>
-            카메라 끄기
+          <button type="button" className="ghost gallery" onClick={() => fileInputRef.current?.click()}>
+            사진 고르기
           </button>
         </div>
       ) : (

@@ -698,11 +698,7 @@ button.badge.link {
   min-height: 44px;
 }
 
-.shutter-row .ghost:first-child {
-  justify-self: start;
-}
-
-.shutter-row .ghost:last-child {
+.shutter-row .gallery {
   justify-self: end;
 }
 
@@ -710,7 +706,8 @@ button.badge.link {
   display: grid;
   place-items: center;
   gap: 4px;
-  width: 96px;
+  width: 88px;
+  min-height: 80px;
   padding: 8px;
   background: transparent;
   border: 0;

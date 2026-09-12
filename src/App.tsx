@@ -232,11 +232,11 @@ export default function App() {
         />
 
         {selected === null ? (
-          <p className="call-to-action" data-testid="pick-slot">
-            {total === 0
-              ? "채우고 싶은 칸을 눌러 주세요. 그 칸만 사진으로 찍으면 꽂힌 순서 그대로 들어갑니다."
-              : "칸을 누르면 그 칸의 책을 보고 고칠 수 있어요."}
-          </p>
+          total === 0 && (
+            <p className="call-to-action" data-testid="pick-slot">
+              칸을 눌러 사진을 찍어 주세요.
+            </p>
+          )
         ) : (
           <SlotPanel
             bookcase={current}

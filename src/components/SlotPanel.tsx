@@ -48,11 +48,7 @@ export function SlotPanel({
         )}
       </div>
 
-      {slot.books.length === 0 ? (
-        <p className="notes">
-          아직 비어 있어요. 이 칸만 화면에 꽉 차게 찍으면 꽂힌 순서 그대로 채워집니다.
-        </p>
-      ) : (
+      {slot.books.length === 0 ? null : (
         <ol className="slot-books-list">
           {slot.books.map((book, order) => (
             <li key={book.id} className="slot-book" data-order={order}>
@@ -70,7 +66,7 @@ export function SlotPanel({
                 <input
                   className="author-input"
                   value={book.author}
-                  placeholder="저자 (선택)"
+                  placeholder="저자"
                   onChange={(event) => onUpdateBook(book.id, { author: event.target.value })}
                   aria-label={`${order + 1}번째 책 저자`}
                 />
@@ -78,15 +74,15 @@ export function SlotPanel({
                   {book.confidence < LOW_CONFIDENCE && <span className="badge confidence low">확인 필요</span>}
                   {book.match && (
                     <span className="badge" data-testid="match-badge" title={book.match.title}>
-                      확인됨
-                      {book.match.firstPublishYear ? ` · ${book.match.firstPublishYear}` : ""}
-                      {book.match.isbn ? ` · ISBN ${book.match.isbn}` : ""}
+                      확인됨{book.match.firstPublishYear ? ` · ${book.match.firstPublishYear}` : ""}
                     </span>
                   )}
-                  {book.spineText && book.spineText !== book.title && (
+                  {/* 원문은 잘못 읽었을 만한 때만 보여 준다. 맞게 읽었으면 군더더기다. */}
+                  {book.confidence < LOW_CONFIDENCE && book.spineText && book.spineText !== book.title && (
                     <span className="badge subtle">원문 “{book.spineText}”</span>
                   )}
-                  {book.alternatives.length > 0 && (
+                  {/* 잘 읽힌 책에 다른 후보를 권할 이유가 없다. 확인이 필요한 책에만 보여 준다. */}
+                  {book.confidence < LOW_CONFIDENCE && book.alternatives.length > 0 && (
                     <button
                       type="button"
                       className="badge link"

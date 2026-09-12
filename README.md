@@ -135,7 +135,8 @@ node bench/segment.mjs bench/.cache/ko-stacked.png   # 책등 분할만 눈으�
 
 ```bash
 npm run build && npm run preview              # 한 터미널에서
-node bench/flow.mjs                           # 다른 터미널에서 (15가지 점검)
+node bench/flow.mjs                           # 다른 터미널에서 (17가지 점검 + 누름 횟수)
+node bench/copy.mjs --verbose                 # 화면에 적힌 설명 글자 수
 ```
 
 남은 한계:

@@ -84,10 +84,9 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
 
       {stage === "capture" && (
         <>
-          <p className="hint">이 칸 하나만 화면에 꽉 차게, 정면에서 찍어 주세요.</p>
           {firstRun && (
             <p className="notice" data-testid="first-run-notice">
-              처음 한 번만 글자 인식 데이터(약 4MB)를 내려받습니다. 그 뒤로는 바로 시작해요.
+              처음 한 번만 인식 데이터 4MB를 받아요. 사진은 기기 밖으로 나가지 않습니다.
             </p>
           )}
           <CameraCapture onCapture={scan} disabled={false} remaining={1} autoStart />
@@ -100,7 +99,7 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
       {stage === "review" &&
         (books.length === 0 ? (
           <>
-            <p className="notes">책을 찾지 못했습니다. 한 칸이 화면에 꽉 차도록 더 가까이에서 찍어 보세요.</p>
+            <p className="notes">책을 찾지 못했어요. 더 가까이에서 찍어 보세요.</p>
             <div className="scan-actions">
               <button type="button" className="primary" onClick={() => setStage("capture")}>
                 다시 찍기
@@ -113,8 +112,8 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
         ) : (
           <>
             <p className="notes" data-testid="scan-summary">
-              왼쪽부터 {books.length}권을 읽었어요. 잘못 읽은 제목은 지금 고치거나 뺄 수 있습니다.
-              {existingCount > 0 && ` 넣으면 이 칸의 ${existingCount}권이 바뀝니다.`}
+              왼쪽부터 {books.length}권
+              {existingCount > 0 && ` · 이 칸의 ${existingCount}권과 바뀝니다`}
             </p>
             <ol className="scan-preview">
               {books.map((book, order) => {
@@ -196,7 +195,6 @@ function Scanning({ progress, onCancel }: { progress: ScanProgress | null; onCan
       <div className="bar">
         <span className={preparing ? "indeterminate" : ""} style={{ width: preparing ? "100%" : `${percent}%` }} />
       </div>
-      <p className="hint">기기 안에서 처리합니다. 사진은 어디로도 전송되지 않아요.</p>
       <div className="scan-actions">
         <button type="button" onClick={onCancel} data-testid="cancel-scan">
           그만두기
