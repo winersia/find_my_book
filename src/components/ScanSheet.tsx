@@ -1,8 +1,8 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { booksFromReadings, LOW_CONFIDENCE, type ShelfBook } from "../lib/bookcase";
 import { enrichBooks } from "../lib/enrich";
 import { toThumbnail } from "../lib/image";
-import { readShelf, type ScanProgress } from "../lib/ocr";
+import { hasOcrModel, readShelf, type ScanProgress } from "../lib/ocr";
 import { CameraCapture } from "./CameraCapture";
 
 interface Props {
@@ -17,117 +17,191 @@ interface Props {
 
 type Stage = "capture" | "scanning" | "review";
 
-/** 칸 하나를 찍어 읽는 화면. 결과를 확인한 뒤 그 칸에 넣는다. */
+/** 책등 한 권을 읽는 데 걸리는 대략의 시간. 남은 시간을 어림잡아 보여 주는 데 쓴다. */
+const SECONDS_PER_BOOK = 3;
+
+/** 칸 하나를 찍어 읽는 화면. 결과를 확인하고 고친 뒤 그 칸에 넣는다. */
 export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClose }: Props) {
   const [stage, setStage] = useState<Stage>("capture");
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [books, setBooks] = useState<ShelfBook[]>([]);
+  const [dropped, setDropped] = useState<Set<string>>(new Set());
   const [photo, setPhoto] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const abort = useRef<AbortController | null>(null);
+
+  const firstRun = !hasOcrModel(langs);
 
   const scan = useCallback(
     async (canvas: HTMLCanvasElement) => {
       setStage("scanning");
       setError(null);
       setPhoto(toThumbnail(canvas));
+      const controller = new AbortController();
+      abort.current = controller;
 
       try {
-        const result = await readShelf(canvas, { langs, onProgress: setProgress });
+        const result = await readShelf(canvas, {
+          langs,
+          onProgress: setProgress,
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+
         const recognized = booksFromReadings(result.readings);
         setBooks(enrich ? await enrichBooks(recognized) : recognized);
+        setDropped(new Set());
         setStage("review");
       } catch (caught) {
+        if (controller.signal.aborted) return;
         setError(caught instanceof Error ? caught.message : "인식에 실패했습니다.");
         setStage("capture");
       } finally {
+        abort.current = null;
         setProgress(null);
       }
     },
     [enrich, langs],
   );
 
+  const cancel = useCallback(() => {
+    abort.current?.abort();
+    abort.current = null;
+    setProgress(null);
+    setStage("capture");
+  }, []);
+
+  const kept = books.filter((book) => !dropped.has(book.id));
+
   return (
     <section className="scan-sheet" data-testid="scan-sheet">
       <header className="scan-header">
         <h2>{label} 채우기</h2>
-        <button type="button" onClick={onClose} aria-label="닫기">
+        <button type="button" onClick={stage === "scanning" ? cancel : onClose} aria-label="닫기">
           ×
         </button>
       </header>
 
       {stage === "capture" && (
         <>
-          <p className="hint">이 칸만 화면에 꽉 차게, 정면에서 찍어 주세요.</p>
-          <CameraCapture onCapture={scan} disabled={false} remaining={1} />
+          <p className="hint">이 칸 하나만 화면에 꽉 차게, 정면에서 찍어 주세요.</p>
+          {firstRun && (
+            <p className="notice" data-testid="first-run-notice">
+              처음 한 번만 글자 인식 데이터(약 4MB)를 내려받습니다. 그 뒤로는 바로 시작해요.
+            </p>
+          )}
+          <CameraCapture onCapture={scan} disabled={false} remaining={1} autoStart />
           {error && <p className="error">{error}</p>}
         </>
       )}
 
-      {stage === "scanning" && (
-        <div className="progress" role="status">
-          <p>
-            {progress?.phase ?? "읽는 중"}
-            {progress && progress.total > 1 && ` ${progress.done}/${progress.total}`}
-          </p>
-          <div className="bar">
-            <span
-              style={{ width: `${Math.round(((progress?.done ?? 0) / Math.max(1, progress?.total ?? 1)) * 100)}%` }}
-            />
-          </div>
-          <p className="hint">기기 안에서 처리합니다. 사진은 어디로도 전송되지 않아요.</p>
-        </div>
-      )}
+      {stage === "scanning" && <Scanning progress={progress} onCancel={cancel} />}
 
-      {stage === "review" && (
-        <>
-          {books.length === 0 ? (
-            <>
-              <p className="notes">책을 찾지 못했습니다. 더 가까이에서 다시 찍어 주세요.</p>
-              <div className="scan-actions">
-                <button type="button" className="primary" onClick={() => setStage("capture")}>
-                  다시 찍기
-                </button>
-                <button type="button" onClick={onClose}>
-                  닫기
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <p className="notes" data-testid="scan-summary">
-                왼쪽부터 {books.length}권을 읽었습니다.
-                {existingCount > 0 && ` 이 칸의 ${existingCount}권을 이 결과로 바꿉니다.`}
-              </p>
-              <ol className="scan-preview">
-                {books.map((book, order) => (
-                  <li key={book.id} className={book.confidence < LOW_CONFIDENCE ? "unsure" : ""}>
+      {stage === "review" &&
+        (books.length === 0 ? (
+          <>
+            <p className="notes">책을 찾지 못했습니다. 한 칸이 화면에 꽉 차도록 더 가까이에서 찍어 보세요.</p>
+            <div className="scan-actions">
+              <button type="button" className="primary" onClick={() => setStage("capture")}>
+                다시 찍기
+              </button>
+              <button type="button" onClick={onClose}>
+                닫기
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="notes" data-testid="scan-summary">
+              왼쪽부터 {books.length}권을 읽었어요. 잘못 읽은 제목은 지금 고치거나 뺄 수 있습니다.
+              {existingCount > 0 && ` 넣으면 이 칸의 ${existingCount}권이 바뀝니다.`}
+            </p>
+            <ol className="scan-preview">
+              {books.map((book, order) => {
+                const isDropped = dropped.has(book.id);
+                return (
+                  <li key={book.id} className={isDropped ? "dropped" : book.confidence < LOW_CONFIDENCE ? "unsure" : ""}>
                     <span className="order">{order + 1}</span>
                     <span className="swatch" style={{ background: book.color }} aria-hidden="true" />
-                    <span className="scan-title">{book.title || "제목 미상"}</span>
-                    {book.confidence < LOW_CONFIDENCE && <span className="badge confidence low">확인 필요</span>}
+                    <input
+                      className="scan-title"
+                      value={book.title}
+                      placeholder="제목 미상 — 직접 적어 주세요"
+                      disabled={isDropped}
+                      onChange={(event) =>
+                        setBooks((previous) =>
+                          previous.map((item) =>
+                            item.id === book.id ? { ...item, title: event.target.value } : item,
+                          ),
+                        )
+                      }
+                      aria-label={`${order + 1}번째 책 제목`}
+                    />
+                    {book.confidence < LOW_CONFIDENCE && !isDropped && (
+                      <span className="badge confidence low">확인 필요</span>
+                    )}
+                    <button
+                      type="button"
+                      className="drop"
+                      onClick={() =>
+                        setDropped((previous) => {
+                          const next = new Set(previous);
+                          if (next.has(book.id)) next.delete(book.id);
+                          else next.add(book.id);
+                          return next;
+                        })
+                      }
+                      aria-label={isDropped ? `${order + 1}번째 책 되살리기` : `${order + 1}번째 책 빼기`}
+                    >
+                      {isDropped ? "되돌리기" : "빼기"}
+                    </button>
                   </li>
-                ))}
-              </ol>
-              <div className="scan-actions">
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={() => onApply(books, photo)}
-                  data-testid="apply-scan"
-                >
-                  이 칸에 넣기
-                </button>
-                <button type="button" onClick={() => setStage("capture")}>
-                  다시 찍기
-                </button>
-                <button type="button" onClick={onClose}>
-                  취소
-                </button>
-              </div>
-            </>
-          )}
-        </>
-      )}
+                );
+              })}
+            </ol>
+            <div className="scan-actions">
+              <button
+                type="button"
+                className="primary"
+                onClick={() => onApply(kept, photo)}
+                disabled={kept.length === 0}
+                data-testid="apply-scan"
+              >
+                {kept.length}권 이 칸에 넣기
+              </button>
+              <button type="button" onClick={() => setStage("capture")}>
+                다시 찍기
+              </button>
+            </div>
+          </>
+        ))}
     </section>
+  );
+}
+
+/** 오래 걸리는 구간. 어디까지 왔는지, 얼마나 남았는지, 멈출 수 있는지를 보여 준다. */
+function Scanning({ progress, onCancel }: { progress: ScanProgress | null; onCancel: () => void }) {
+  const preparing = !progress || progress.total <= 1;
+  const ratio = progress && progress.total > 0 ? progress.done / progress.total : 0;
+  const percent = Math.round(Math.min(1, ratio) * 100);
+  const remaining =
+    progress && progress.total > 1 ? Math.max(1, Math.round((progress.total - progress.done) * SECONDS_PER_BOOK)) : 0;
+
+  return (
+    <div className="progress" role="status" data-testid="scanning">
+      <p className="progress-line">
+        <strong>{preparing ? "읽을 준비를 하고 있어요" : `책등을 읽는 중 ${progress.done}/${progress.total}`}</strong>
+        {remaining > 0 && <span className="remaining">약 {remaining}초 남음</span>}
+      </p>
+      <div className="bar">
+        <span className={preparing ? "indeterminate" : ""} style={{ width: preparing ? "100%" : `${percent}%` }} />
+      </div>
+      <p className="hint">기기 안에서 처리합니다. 사진은 어디로도 전송되지 않아요.</p>
+      <div className="scan-actions">
+        <button type="button" onClick={onCancel} data-testid="cancel-scan">
+          그만두기
+        </button>
+      </div>
+    </div>
   );
 }

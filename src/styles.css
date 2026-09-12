@@ -65,6 +65,50 @@ h2 {
   font-size: 0.88rem;
 }
 
+/* 다음에 할 일을 알려 주는 줄. 회색 작은 글씨로 묻히면 아무도 읽지 않는다. */
+.call-to-action {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(217, 164, 65, 0.1);
+  border: 1px solid rgba(217, 164, 65, 0.28);
+  color: var(--text);
+  font-size: 0.92rem;
+}
+
+.notice {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* 첫 화면 3단계 안내 */
+.steps {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.steps strong {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.75rem;
+}
+
 button,
 select {
   font: inherit;
@@ -145,6 +189,11 @@ select:focus-visible {
   .setup-body {
     grid-template-columns: 1fr;
   }
+
+  /* 숫자를 바꾼 결과를 먼저 보여 준다. 확정 버튼은 그 아래에 있다. */
+  .setup-preview {
+    order: -1;
+  }
 }
 
 .setup-controls {
@@ -166,9 +215,16 @@ select:focus-visible {
 }
 
 .number-field .stepper button {
-  width: 42px;
-  font-size: 1.1rem;
+  width: 48px;
+  min-height: 44px;
+  font-size: 1.2rem;
   padding: 8px 0;
+}
+
+.field span em {
+  font-style: normal;
+  opacity: 0.6;
+  font-size: 0.8rem;
 }
 
 .number-field input {
@@ -181,6 +237,13 @@ select:focus-visible {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  margin-top: 18px;
+}
+
+.setup-actions .big {
+  flex: 1 1 220px;
+  padding: 14px;
+  font-size: 1rem;
 }
 
 .preview-caption {
@@ -190,6 +253,12 @@ select:focus-visible {
 }
 
 /* 책장 그림 */
+
+.bookcase-scroll {
+  overflow-x: auto;
+  padding-bottom: 4px;
+  -webkit-overflow-scrolling: touch;
+}
 
 .bookcase-frame {
   display: grid;
@@ -263,13 +332,20 @@ select:focus-visible {
   mix-blend-mode: difference;
 }
 
-.slot-hint {
+/* 빈 칸에는 글자 대신 +. 칸이 좁아 글자는 읽히지 않고 소음만 된다. */
+.slot-plus {
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
-  color: rgba(242, 237, 225, 0.35);
-  font-size: 0.72rem;
+  color: rgba(242, 237, 225, 0.3);
+  font-size: 1.5rem;
+  font-weight: 300;
+}
+
+.slot.empty:hover .slot-plus,
+.slot.selected .slot-plus {
+  color: var(--accent);
 }
 
 /* 칸 편집 */
@@ -361,8 +437,9 @@ select:focus-visible {
 
 .book-tools button,
 .book-tools select {
-  padding: 6px 9px;
+  padding: 8px 11px;
   font-size: 0.85rem;
+  min-height: 40px;
 }
 
 .book-tools .remove {
@@ -402,15 +479,37 @@ button.badge.link {
 
 /* 도구와 설정 */
 
+.more-tools {
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.more-tools summary {
+  color: var(--muted);
+  font-size: 0.88rem;
+  cursor: pointer;
+  padding: 6px 0;
+}
+
 .bookcase-tools,
 .settings {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
   align-items: center;
-  margin-top: 20px;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
+  margin-top: 12px;
+}
+
+.danger-zone {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+
+.danger-zone button {
+  font-size: 0.85rem;
+  padding: 7px 12px;
 }
 
 .bookcase-tools button {
@@ -505,9 +604,26 @@ button.badge.link {
 .scan-title {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.scan-preview li.dropped {
+  opacity: 0.45;
+}
+
+.scan-preview li.dropped .scan-title {
+  text-decoration: line-through;
+}
+
+.scan-preview .drop {
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  min-height: 36px;
 }
 
 .scan-actions {
@@ -564,6 +680,81 @@ button.badge.link {
   margin-top: 12px;
 }
 
+/* 사진 앱과 같은 자리, 같은 모양의 셔터 */
+.shutter-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.shutter-row .ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 10px 6px;
+  min-height: 44px;
+}
+
+.shutter-row .ghost:first-child {
+  justify-self: start;
+}
+
+.shutter-row .ghost:last-child {
+  justify-self: end;
+}
+
+.shutter {
+  display: grid;
+  place-items: center;
+  gap: 4px;
+  width: 96px;
+  padding: 8px;
+  background: transparent;
+  border: 0;
+}
+
+.shutter-ring {
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px var(--bg), 0 0 0 7px var(--accent);
+}
+
+.shutter:disabled .shutter-ring {
+  background: var(--surface-2);
+  box-shadow: 0 0 0 4px var(--bg), 0 0 0 7px var(--line);
+}
+
+.shutter-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+/* 글 대신 보여 주는 촬영 안내 */
+.frame-guide {
+  position: absolute;
+  inset: 8% 6%;
+  border: 2px dashed rgba(255, 255, 255, 0.55);
+  border-radius: 8px;
+  display: grid;
+  align-content: end;
+  justify-items: center;
+  padding-bottom: 8px;
+  pointer-events: none;
+}
+
+.frame-guide span {
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 0.78rem;
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+
 /* 진행 상황 */
 
 .progress {
@@ -574,6 +765,31 @@ button.badge.link {
 
 .progress p {
   margin: 0 0 8px;
+}
+
+.progress-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+  color: var(--text);
+}
+
+.progress-line .remaining {
+  color: var(--muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.progress .bar span.indeterminate {
+  animation: sweep 1.4s ease-in-out infinite;
+  transform-origin: left center;
+}
+
+@keyframes sweep {
+  0% { transform: scaleX(0.15); opacity: 0.6; }
+  50% { transform: scaleX(0.7); opacity: 1; }
+  100% { transform: scaleX(0.15); opacity: 0.6; }
 }
 
 .progress .bar {
@@ -590,6 +806,16 @@ button.badge.link {
   transition: width 0.25s ease;
 }
 
+.toast button {
+  margin-left: 10px;
+  padding: 4px 10px;
+  font-size: 0.85rem;
+  background: rgba(0, 0, 0, 0.18);
+  border-color: transparent;
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
 .toast {
   position: fixed;
   left: 50%;
@@ -603,4 +829,7 @@ button.badge.link {
   font-weight: 600;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   z-index: 20;
+  display: flex;
+  align-items: center;
+  max-width: calc(100vw - 32px);
 }

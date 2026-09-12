@@ -39,7 +39,7 @@ export function SlotPanel({
           {slot.books.length === 0 ? "이 칸 촬영하기" : "이 칸 다시 찍기"}
         </button>
         <button type="button" onClick={onAddBook}>
-          책 추가
+          책 직접 넣기
         </button>
         {slot.books.length > 0 && (
           <button type="button" className="danger" onClick={onClearSlot}>
@@ -50,7 +50,7 @@ export function SlotPanel({
 
       {slot.books.length === 0 ? (
         <p className="notes">
-          아직 비어 있습니다. 이 칸만 화면에 꽉 차게 찍으면 꽂힌 순서 그대로 채워집니다.
+          아직 비어 있어요. 이 칸만 화면에 꽉 차게 찍으면 꽂힌 순서 그대로 채워집니다.
         </p>
       ) : (
         <ol className="slot-books-list">
@@ -92,7 +92,7 @@ export function SlotPanel({
                       className="badge link"
                       onClick={() => cycle(book, onUpdateBook)}
                     >
-                      다르게 읽기 “{shorten(book.alternatives[0])}”
+                      “{shorten(book.alternatives[0])}”로 바꾸기
                     </button>
                   )}
                 </div>

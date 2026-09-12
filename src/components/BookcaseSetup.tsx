@@ -47,8 +47,22 @@ export function BookcaseSetup({
   return (
     <section className="setup">
       <header className="setup-header">
-        <h2>{existing ? "책장 칸 수 바꾸기" : "책장 만들기"}</h2>
-        <p className="hint">실제 책장과 같은 칸 수로 맞춰 주세요. 사진은 칸마다 찍습니다.</p>
+        <h2>{existing ? "책장 칸 수 바꾸기" : "내 책장을 앱에 옮겨요"}</h2>
+        {existing ? (
+          <p className="hint">남는 칸의 책은 그대로 있습니다.</p>
+        ) : (
+          <ol className="steps">
+            <li>
+              <strong>1</strong> 실제 책장과 같은 칸 수로 맞추기
+            </li>
+            <li>
+              <strong>2</strong> 칸을 하나씩 사진 찍기
+            </li>
+            <li>
+              <strong>3</strong> 꽂힌 순서 그대로 앱 책장에 담기기
+            </li>
+          </ol>
+        )}
       </header>
 
       <div className="setup-body">
@@ -64,35 +78,35 @@ export function BookcaseSetup({
           </label>
 
           <NumberField
-            label="가로 칸"
+            label="한 줄에 몇 칸"
+            hint="가로"
+            unit="칸 수"
             value={columns}
             min={MIN_COLUMNS}
             max={MAX_COLUMNS}
             onChange={setColumns}
           />
-          <NumberField label="세로 칸" value={rows} min={MIN_ROWS} max={MAX_ROWS} onChange={setRows} />
+          <NumberField
+            label="몇 줄"
+            hint="세로"
+            unit="줄 수"
+            value={rows}
+            min={MIN_ROWS}
+            max={MAX_ROWS}
+            onChange={setRows}
+          />
 
           <p className="hint">
-            칸 {columns} × {rows} = 모두 {columns * rows}칸
+            {columns}칸 × {rows}줄 = 모두 {columns * rows}칸
           </p>
           {lost > 0 && (
             <p className="error">칸을 줄이면 {lost}권이 사라집니다. 확인 후 진행합니다.</p>
           )}
 
-          <div className="setup-actions">
-            <button type="button" className="primary" onClick={submit}>
-              {existing ? "칸 수 바꾸기" : "이 책장 만들기"}
-            </button>
-            {onCancel && (
-              <button type="button" onClick={onCancel}>
-                취소
-              </button>
-            )}
-          </div>
         </div>
 
         <div className="setup-preview">
-          <p className="preview-caption">미리보기</p>
+          <p className="preview-caption">이런 모양이 됩니다</p>
           <div
             className="bookcase-frame preview"
             style={{ gridTemplateColumns: `repeat(${columns}, 1fr)` }}
@@ -103,6 +117,17 @@ export function BookcaseSetup({
             ))}
           </div>
         </div>
+      </div>
+
+      <div className="setup-actions">
+        <button type="button" className="primary big" onClick={submit}>
+          {existing ? "칸 수 바꾸기" : "이 책장 만들기"}
+        </button>
+        {onCancel && (
+          <button type="button" onClick={onCancel}>
+            취소
+          </button>
+        )}
       </div>
     </section>
   );
@@ -115,24 +140,29 @@ function askBeforeLosingBooks(lost: number): boolean {
 
 interface NumberFieldProps {
   label: string;
+  hint: string;
+  /** 읽어 주는 이름. 화면 글자를 그대로 읽으면 "한 줄에 몇 칸 줄이기"처럼 어색해진다. */
+  unit: string;
   value: number;
   min: number;
   max: number;
   onChange: (value: number) => void;
 }
 
-function NumberField({ label, value, min, max, onChange }: NumberFieldProps) {
+function NumberField({ label, hint, unit, value, min, max, onChange }: NumberFieldProps) {
   const set = (next: number) => onChange(Math.min(max, Math.max(min, next)));
 
   return (
     <div className="field number-field">
-      <span>{label}</span>
+      <span>
+        {label} <em>{hint}</em>
+      </span>
       <div className="stepper">
         <button
           type="button"
           onClick={() => set(value - 1)}
           disabled={value <= min}
-          aria-label={`${label} 줄이기`}
+          aria-label={`${unit} 줄이기`}
         >
           −
         </button>
@@ -142,13 +172,13 @@ function NumberField({ label, value, min, max, onChange }: NumberFieldProps) {
           min={min}
           max={max}
           onChange={(event) => set(Number(event.target.value))}
-          aria-label={label}
+          aria-label={unit}
         />
         <button
           type="button"
           onClick={() => set(value + 1)}
           disabled={value >= max}
-          aria-label={`${label} 늘리기`}
+          aria-label={`${unit} 늘리기`}
         >
           +
         </button>

@@ -30,6 +30,15 @@ function matchIndex(text) {
   });
 }
 
+/**
+ * 수고 재기: 앱을 열고 첫 칸이 채워질 때까지 몇 번 누르고 몇 초가 걸리는지 센다.
+ * UX 를 고칠 때 "좋아졌다"는 느낌 대신 이 숫자를 본다.
+ */
+const effort = { taps: 0, startedAt: 0, firstSlotFilledMs: 0, counting: true };
+function countTap() {
+  if (effort.counting) effort.taps += 1;
+}
+
 const results = [];
 const check = (name, ok, detail = "") => {
   results.push({ name, ok, detail });
@@ -114,7 +123,8 @@ const browser = await chromium.launch({
     ...sandboxNetwork.args,
   ],
 });
-const context = await browser.newContext({ viewport: { width: 900, height: 900 } });
+// 책장 앞에서 휴대폰으로 쓰는 앱이다. 점검도 휴대폰 폭에서 한다.
+const context = await browser.newContext({ viewport: { width: 420, height: 900 } });
 await context.grantPermissions(["camera"], { origin: new URL(APP_URL).origin });
 const page = await context.newPage();
 page.on("pageerror", (error) => console.log("  [페이지오류]", String(error).slice(0, 160)));
@@ -124,22 +134,23 @@ page.on("dialog", (dialog) => dialog.accept());
 async function scanIntoSelectedSlot() {
   await page.click('[data-testid="scan-slot"]');
   await page.waitForSelector('[data-testid="scan-sheet"]');
-  // 시트 뒤에 "이 칸 촬영하기" 버튼이 있어, 선택자를 시트 안으로 한정한다.
+  // 카메라는 시트가 열리면서 저절로 켜진다. 셔터가 눌릴 수 있을 때까지 기다렸다 찍는다.
   const sheet = page.locator('[data-testid="scan-sheet"]');
-  await sheet.getByText("카메라 켜기").click();
-  const shoot = sheet.locator('button.primary:text-is("촬영")');
-  await shoot.waitFor({ state: "visible", timeout: 20000 });
+  const shutter = sheet.locator("button.shutter");
+  await shutter.waitFor({ state: "visible", timeout: 20000 });
   await page.waitForFunction(
     () => {
-      const buttons = [...document.querySelectorAll('[data-testid="scan-sheet"] button.primary')];
-      return buttons.some((b) => b.textContent.trim() === "촬영" && !b.disabled);
+      const button = document.querySelector('[data-testid="scan-sheet"] button.shutter');
+      return button && !button.disabled;
     },
     { timeout: 20000 },
   );
-  await shoot.click();
+  countTap();
+  await shutter.click();
   await page.waitForSelector('[data-testid="apply-scan"]', { timeout: 600000 });
+  // 결과 제목은 그 자리에서 고칠 수 있는 입력칸이다.
   const recognized = await page.$$eval(".scan-preview .scan-title", (els) =>
-    els.map((e) => e.textContent.trim()),
+    els.map((e) => e.value.trim()),
   );
   console.log(`   인식: ${recognized.join(" / ")}`);
   await page.click('[data-testid="apply-scan"]');
@@ -147,12 +158,26 @@ async function scanIntoSelectedSlot() {
   return recognized;
 }
 
+/** 부가 기능은 접혀 있다. 필요한 때만 펼친다. */
+async function openTools() {
+  const details = page.locator("details.more-tools");
+  if (!(await details.evaluate((el) => el.open))) await details.locator("summary").click();
+}
+
 const slotTitles = () =>
   page.$$eval('[data-testid="slot-panel"] .title-input', (els) => els.map((e) => e.value));
 const slotCount = (index) =>
   page.$eval(`[data-slot="${index}"]`, (el) => Number(el.dataset.count));
 
+// page.click / locator.click 을 세기 위해 얇게 감싼다.
+const rawClick = page.click.bind(page);
+page.click = async (...args) => {
+  countTap();
+  return rawClick(...args);
+};
+
 await page.goto(APP_URL, { waitUntil: "networkidle" });
+effort.startedAt = Date.now();
 
 // 1. 첫 화면은 책장 설정, 기본 8×2
 const defaults = await page.$$eval(".number-field input", (els) => els.map((e) => e.value));
@@ -161,8 +186,8 @@ check("첫 화면이 책장 설정이고 기본이 8×2다", defaults.join("×")
   `${defaults.join("×")} · 미리보기 ${previewSlots}칸`);
 
 // 2. 숫자를 바꾸면 미리보기가 따라 바뀐다
-await page.click('button[aria-label="가로 칸 줄이기"]');
-await page.click('button[aria-label="가로 칸 줄이기"]');
+await page.click('button[aria-label="칸 수 줄이기"]');
+await page.click('button[aria-label="칸 수 줄이기"]');
 const afterChange = await page.$$eval('[data-testid="setup-preview"] .slot', (els) => els.length);
 check("칸 수를 바꾸면 미리보기가 따라 바뀐다", afterChange === 12, `${afterChange}칸`);
 
@@ -177,10 +202,15 @@ check("확정하면 책장 화면에 책장이 그려진다", shelfSlots === 12,
 await page.click('[data-slot="0"]');
 await page.waitForSelector('[data-testid="slot-panel"]');
 const panelTitle = await page.textContent('[data-testid="slot-panel"] h2');
-check("칸을 누르면 그 칸이 선택된다", panelTitle.includes("1층 1번째"), panelTitle.trim());
+check("칸을 누르면 그 칸이 선택된다", panelTitle.includes("1번째 줄 1번째 칸"), panelTitle.trim());
 
 // 5·6. 촬영 결과가 순서대로 그 칸에 들어간다
 const recognized = await scanIntoSelectedSlot();
+effort.firstSlotFilledMs = Date.now() - effort.startedAt;
+effort.counting = false;
+console.log(
+  `   [수고] 앱을 연 뒤 첫 칸이 채워질 때까지 ${effort.taps}번 누름 · ${Math.round(effort.firstSlotFilledMs / 1000)}초`,
+);
 const placed = await slotTitles();
 check(
   "실제 권수와 같은 수를 읽는다",
@@ -230,7 +260,7 @@ check(
 const beforeRemove = (await slotTitles()).length;
 await page.click('button[aria-label="1번째 책 빼기"]');
 const afterRemove = (await slotTitles()).length;
-await page.click("text=책 추가");
+await page.click("text=책 직접 넣기");
 const afterAdd = await slotTitles();
 await page.locator('[data-testid="slot-panel"] .title-input').last().fill("손으로 넣은 책");
 check(
@@ -261,10 +291,11 @@ check(
 );
 
 // 칸 수를 늘려도 책은 그대로 남는다 (문서의 엣지 케이스)
+await openTools();
 await page.click("text=칸 수 바꾸기");
 await page.waitForSelector('[data-testid="setup-preview"]');
-await page.click('button[aria-label="가로 칸 늘리기"]');
-await page.click('button[aria-label="가로 칸 늘리기"]');
+await page.click('button[aria-label="칸 수 늘리기"]');
+await page.click('button[aria-label="칸 수 늘리기"]');
 await page.click(".setup-actions button.primary");
 await page.waitForSelector('[data-testid="bookcase"]');
 const grownSlots = await page.$$eval('[data-testid="bookcase"] .slot', (els) => els.length);
@@ -276,6 +307,7 @@ check(
 );
 
 // 11. 책장을 하나 더 만들 수 있다
+await openTools();
 await page.click("text=책장 추가");
 await page.waitForSelector('[data-testid="setup-preview"]');
 await page.fill('input[aria-label="책장 이름"]', "서재 책장");

@@ -147,6 +147,11 @@ async function spawn(
   return worker;
 }
 
+/** 이 언어의 모델을 이미 받아 뒀는지. 처음 실행인지 알려 줄 때 쓴다. */
+export function hasOcrModel(langs: string): boolean {
+  return cached?.langs === langs;
+}
+
 export async function releaseOcr(): Promise<void> {
   await cached?.worker.terminate();
   await cachedVertical?.terminate();

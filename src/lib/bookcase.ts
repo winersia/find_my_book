@@ -79,10 +79,23 @@ export function slotIndex(bookcase: Pick<Bookcase, "columns">, row: number, colu
   return row * bookcase.columns + column;
 }
 
+/**
+ * 칸 이름. 설정 화면에서 쓴 "줄"과 "칸"을 그대로 쓴다.
+ * "1층"은 책장 맨 아래를 뜻할 수도 있어 헷갈린다. 화면에 보이는 대로 위에서부터 센다.
+ */
 export function slotLabel(bookcase: Pick<Bookcase, "columns">, index: number): string {
   const row = Math.floor(index / bookcase.columns) + 1;
   const column = (index % bookcase.columns) + 1;
-  return `${row}층 ${column}번째 칸`;
+  return `${row}번째 줄 ${column}번째 칸`;
+}
+
+/** 이름 뒤에 붙일 조사를 고른다. "내 책장을", "거실 책장을" 처럼 어색하지 않게. */
+export function withParticle(name: string, withFinal: string, withoutFinal: string): string {
+  const last = name.trim().slice(-1);
+  const code = last.charCodeAt(0);
+  const isHangul = code >= 0xac00 && code <= 0xd7a3;
+  if (!isHangul) return `${name}${withFinal}`;
+  return `${name}${(code - 0xac00) % 28 > 0 ? withFinal : withoutFinal}`;
 }
 
 export function countBooks(bookcase: Bookcase): number {
