@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>OCR 정확도 벤치</title>
+  </head>
+  <body>
+    <p>이 페이지는 정확도 측정용입니다. bench/run.mjs 가 자동으로 띄웁니다.</p>
+    <script type="module">
+      import { readShelf } from "/src/lib/ocr.ts";
+      import { toWorkingCanvas } from "/src/lib/image.ts";
+      import { segmentSpines } from "/src/lib/segment.ts";
+
+      // 분할만 따로 확인할 때 쓴다 (bench/segment.mjs).
+      window.__segment = async (dataUrl, options = {}) => {
+        const blob = await (await fetch(dataUrl)).blob();
+        const canvas = await toWorkingCanvas(blob);
+        const result = segmentSpines(canvas, options);
+        return {
+          width: canvas.width,
+          height: canvas.height,
+          tiltDeg: result.tiltDeg,
+          bands: result.bands.map((b) => ({ x0: b.x0, x1: b.x1, ink: b.ink, color: b.color })),
+          profile: result.profile,
+        };
+      };
+
+      // Playwright가 호출한다. 이미지를 넣으면 인식 결과를 돌려준다.
+      window.__bench = async (dataUrl, options) => {
+        const blob = await (await fetch(dataUrl)).blob();
+        const canvas = await toWorkingCanvas(blob);
+        const started = performance.now();
+        const result = await readShelf(canvas, { langs: options.langs, ...options });
+        return {
+          elapsedMs: Math.round(performance.now() - started),
+          tiltDeg: result.tiltDeg,
+          usedFallback: result.usedFallback,
+          readings: result.readings.map((r) => ({
+            text: r.text,
+            alternatives: r.alternatives,
+            confidence: r.confidence,
+          })),
+        };
+      };
+      window.__ready = true;
+    </script>
+  </body>
+</html>
