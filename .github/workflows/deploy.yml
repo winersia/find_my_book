@@ -1,0 +1,57 @@
+# main 에 올라오면 GitHub Pages 로 배포한다.
+#
+# 이 앱은 서버가 없다. OCR 이 전부 브라우저에서 돌기 때문에 빌드 결과물만 올리면 끝난다.
+# 저장소 설정에서 Settings → Pages → Source 를 "GitHub Actions" 로 한 번 바꿔 줘야 한다.
+name: 배포
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 배포는 한 번에 하나만. 진행 중인 배포는 취소하지 않는다.
+# 취소하면 GitHub 쪽 배포가 중간에 매달려 다음 실행이 막힐 수 있고,
+# 어차피 결과물은 다음 실행이 덮어쓰므로 취소해서 얻는 것도 없다.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      # 저장소 이름이 곧 하위 경로다. 이름이 바뀌어도 따라간다.
+      - name: 빌드
+        run: npm run build
+        env:
+          VITE_BASE: /${{ github.event.repository.name }}/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

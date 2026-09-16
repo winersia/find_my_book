@@ -55,6 +55,41 @@ OCR 워커와 wasm 코어는 이미 앱과 함께 배포됩니다. `npm install`
 언어 데이터를 못 받으면(오프라인이거나 CDN이 막힌 경우) 화면에 그 사실과 함께
 위 명령을 안내합니다. 기다리다 멈춰 있지 않습니다.
 
+## 배포
+
+서버가 필요 없습니다. OCR 이 전부 브라우저에서 도니 빌드 결과물만 올리면 됩니다.
+
+### GitHub Pages (설정돼 있음)
+
+`main` 에 올라오면 `.github/workflows/deploy.yml` 이 빌드해서 배포합니다.
+**저장소에서 한 번만** Settings → Pages → Source 를 **GitHub Actions** 로 바꿔 주세요.
+
+주소는 `https://<사용자>.github.io/<저장소 이름>/` 이 됩니다. 하위 경로라 자산 경로가
+어긋나기 쉬운데, 워크플로가 저장소 이름을 `VITE_BASE` 로 넣어 줍니다. 이름을 바꿔도 따라갑니다.
+
+### 다른 곳에 올릴 때
+
+Cloudflare Pages, Netlify, Vercel 모두 무료로 됩니다. 빌드 명령은 `npm run build`,
+배포할 폴더는 `dist` 입니다. 최상위 도메인으로 서비스한다면 `VITE_BASE` 는 건드릴 필요가 없고,
+하위 경로라면 `VITE_BASE=/경로/` 를 넣고 빌드하세요.
+
+```bash
+VITE_BASE=/find_my_book/ npm run build   # 하위 경로에 올릴 때
+npx vite preview --base=/find_my_book/   # 같은 경로로 확인
+```
+
+배포물은 12MB 정도입니다. 대부분 wasm 코어 세 종류(각 3.7MB)이고 브라우저는 그중
+하나만 받습니다. 언어 데이터는 처음 한 번 CDN 에서 받습니다. 첫 방문이 느린 대신
+그 뒤로는 캐시에서 씁니다.
+
+CDN 조차 쓰지 않으려면 위의 "완전 오프라인으로 쓰기" 를 따르되, **하위 경로에 올릴 때는
+경로에도 하위 경로를 붙여야 합니다.** 루트 기준으로 적으면 브라우저가 엉뚱한 곳을 찾습니다.
+
+```bash
+npm run fetch:langdata
+VITE_BASE=/find_my_book/ VITE_TESSDATA_PATH=/find_my_book/tessdata npm run build
+```
+
 ### 휴대폰에서 카메라 쓰기
 
 브라우저는 `localhost`가 아닌 주소에서 **HTTPS일 때만** 카메라를 열어 줍니다.
