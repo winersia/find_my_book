@@ -80,7 +80,15 @@ npx vite preview --base=/find_my_book/   # 같은 경로로 확인
 
 배포물은 12MB 정도입니다. 대부분 wasm 코어 세 종류(각 3.7MB)이고 브라우저는 그중
 하나만 받습니다. 언어 데이터는 처음 한 번 CDN 에서 받습니다. 첫 방문이 느린 대신
-그 뒤로는 캐시에서 씁니다. 완전히 자립시키려면 위의 "완전 오프라인으로 쓰기" 를 따르세요.
+그 뒤로는 캐시에서 씁니다.
+
+CDN 조차 쓰지 않으려면 위의 "완전 오프라인으로 쓰기" 를 따르되, **하위 경로에 올릴 때는
+경로에도 하위 경로를 붙여야 합니다.** 루트 기준으로 적으면 브라우저가 엉뚱한 곳을 찾습니다.
+
+```bash
+npm run fetch:langdata
+VITE_BASE=/find_my_book/ VITE_TESSDATA_PATH=/find_my_book/tessdata npm run build
+```
 
 ### 휴대폰에서 카메라 쓰기
 
