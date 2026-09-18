@@ -25,6 +25,10 @@ const langsOverride = valueOf("--langs");
 const verticalMode = valueOf("--vertical");
 const spineWidth = valueOf("--spine-width");
 const segmentOverride = valueOf("--segment");
+/** 렌더 배율. 올리면 합성 사진 자체가 더 촘촘해져 책등에 실리는 화소가 는다. */
+const renderScale = Number(valueOf("--dsf") ?? 2.5);
+/** 읽히기 전에 사진을 이 가로 크기로 줄인다. 카메라가 덜 담은 상황을 흉내 낸다. */
+const shrinkTo = valueOf("--width") ? Number(valueOf("--width")) : 0;
 const keepImages = args.includes("--keep-images");
 
 function valueOf(flag) {
@@ -49,6 +53,25 @@ async function koreanFontFace() {
     face: `@font-face { font-family: "BenchKR"; font-weight: 700; src: url(data:font/woff2;base64,${base64}) format("woff2"); }`,
     family: '"BenchKR", sans-serif',
   };
+}
+
+/** 사진을 이 가로 크기로 줄인다. 카메라가 멀리서 담은 상황을 흉내 낸다. */
+async function shrink(page, dataUrl, width) {
+  return page.evaluate(
+    async ([url, target]) => {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = target;
+      canvas.height = Math.round((img.height * target) / img.width);
+      const ctx = canvas.getContext("2d");
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL("image/png");
+    },
+    [dataUrl, width],
+  );
 }
 
 const norm = (value) => value.toLowerCase().replace(/[^a-z0-9가-힣]/g, "");
@@ -131,7 +154,7 @@ const browser = await chromium.launch({
 });
 
 const font = await koreanFontFace();
-const renderer = await browser.newPage({ viewport: { width: 1280, height: 520 }, deviceScaleFactor: 2.5 });
+const renderer = await browser.newPage({ viewport: { width: 1280, height: 520 }, deviceScaleFactor: renderScale });
 const app = await browser.newPage();
 app.on("pageerror", (error) => console.log("  [페이지오류]", String(error).slice(0, 200)));
 await app.goto(APP_URL, { waitUntil: "networkidle" });
@@ -153,7 +176,8 @@ for (const testCase of CASES) {
   const shot = path.join(CACHE, `${testCase.id}.png`);
   await renderer.screenshot({ path: shot, clip: { x: 4, y: 60, width: 620, height: 458 } });
 
-  const dataUrl = `data:image/png;base64,${fs.readFileSync(shot).toString("base64")}`;
+  let dataUrl = `data:image/png;base64,${fs.readFileSync(shot).toString("base64")}`;
+  if (shrinkTo) dataUrl = await shrink(app, dataUrl, shrinkTo);
   const langs = langsOverride ?? (testCase.korean ? "kor+eng" : "eng");
   const result = await app.evaluate(
     ([url, options]) => window.__bench(url, options),
@@ -164,6 +188,9 @@ for (const testCase of CASES) {
   );
 
   const graded = grade(testCase.titles, result.readings);
+  // 이 사진에서 책등 하나가 실제로 몇 px이었는지. 정확도를 좌우하는 값이다.
+  const spinePxList = result.readings.map((r) => r.x1 - r.x0).sort((a, b) => a - b);
+  const spinePx = Math.round(spinePxList[Math.floor(spinePxList.length / 2)] ?? 0);
   const hits = graded.filter((g) => g.score >= 0.7).length;
   const reachable = graded.filter((g) => g.anyScore >= 0.7).length;
   const exact = graded.filter((g) => g.exact).length;
@@ -176,7 +203,7 @@ for (const testCase of CASES) {
   console.log(`\n■ ${testCase.label} (${testCase.id}, ${langs}${verticalMode ? `, 세로=${verticalMode}` : ""})`);
   console.log(
     `  바로 맞은 것 ${hits}/${testCase.titles.length}, "다르게 읽기"까지 포함 ${reachable}/${testCase.titles.length} · ` +
-      `${(result.elapsedMs / 1000).toFixed(0)}초 · 기울기 ${result.tiltDeg.toFixed(1)}° · 인식 ${result.readings.length}건` +
+      `${(result.elapsedMs / 1000).toFixed(0)}초 · 책등 ${spinePx}px · 인식 ${result.readings.length}건` +
       (result.usedFallback ? " · 폴백" : ""),
   );
   console.log(
@@ -190,6 +217,7 @@ for (const testCase of CASES) {
   }
   summary.push({
     id: testCase.id,
+    spinePx,
     hits,
     reachable,
     exact,
@@ -204,8 +232,9 @@ for (const testCase of CASES) {
 console.log("\n=== 요약 ===");
 for (const row of summary) {
   console.log(
-    `  ${row.id.padEnd(12)} 바로 ${row.hits}/${row.total} · 후보 포함 ${row.reachable}/${row.total} · ` +
-      `글자 일치 ${row.exact}/${row.total} · 오류율 ${(row.meanCer * 100).toFixed(0)}% · ${row.seconds.toFixed(0)}초`,
+    `  ${row.id.padEnd(12)} 책등 ${String(row.spinePx).padStart(3)}px · 바로 ${row.hits}/${row.total} · ` +
+      `후보 포함 ${row.reachable}/${row.total} · 글자 일치 ${row.exact}/${row.total} · ` +
+      `오류율 ${(row.meanCer * 100).toFixed(0)}% · ${row.seconds.toFixed(0)}초`,
   );
 }
 

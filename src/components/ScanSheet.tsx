@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { appendBatch, booksFromReadings, LOW_CONFIDENCE, type ShelfBook } from "../lib/bookcase";
 import { enrichBooks } from "../lib/enrich";
-import { toThumbnail } from "../lib/image";
+import { maxBooksPerShot, TARGET_SPINE_PX, toThumbnail } from "../lib/image";
 import { hasOcrModel, readShelf, type ScanProgress } from "../lib/ocr";
 import { CameraCapture } from "./CameraCapture";
 
@@ -20,14 +20,7 @@ type Stage = "capture" | "scanning" | "review";
 /** 책등 한 권을 읽는 데 걸리는 대략의 시간. 남은 시간을 어림잡아 보여 주는 데 쓴다. */
 const SECONDS_PER_BOOK = 3;
 
-/**
- * 책등이 이 굵기(px)에 못 미치면 나눠 찍기를 권한다.
- *
- * 책등 두께를 절반(24px)으로 줄여 재 보면 제목이 제대로 읽힌 권수가 11권에서 4권으로
- * 떨어진다. 얇은 책이 빽빽한 칸은 한 번에 담을수록 한 권이 차지하는 화소가 줄어
- * 어떤 후처리로도 살릴 수 없다. 절반씩 나눠 찍으면 그만큼 굵어진다.
- */
-const THIN_SPINE_PX = 60;
+
 
 /** 칸 하나를 찍어 읽는 화면. 결과를 확인하고 고친 뒤 그 칸에 넣는다. */
 export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClose }: Props) {
@@ -40,8 +33,10 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
   const [shots, setShots] = useState(0);
   /** 이번 촬영을 앞 결과 뒤에 이어 붙일지 (나눠 찍기), 통째로 바꿀지 */
   const [appending, setAppending] = useState(false);
-  /** 책등이 얇아 나눠 찍기를 권할 상황인지 */
-  const [thin, setThin] = useState(false);
+  /** 방금 사진에서 책등이 실제로 몇 px이었는지. 제목이 읽히는지를 거의 다 결정한다. */
+  const [spinePx, setSpinePx] = useState(0);
+  /** 이 사진 한 장에 담아도 됐을 권수 */
+  const [shotCapacity, setShotCapacity] = useState(0);
   const abort = useRef<AbortController | null>(null);
 
   const firstRun = !hasOcrModel(langs);
@@ -65,12 +60,13 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
 
         // 책등이 실제로 몇 px인지 본다. 이것이 제목을 읽을 수 있는지를 거의 다 결정한다.
         const widths = result.readings.map((reading) => reading.x1 - reading.x0).sort((a, b) => a - b);
-        const spinePx = widths[Math.floor(widths.length / 2)] ?? 0;
+        const measured = Math.round(widths[Math.floor(widths.length / 2)] ?? 0);
 
         const recognized = booksFromReadings(result.readings);
         const batch = enrich ? await enrichBooks(recognized) : recognized;
         setBooks((previous) => (appending ? appendBatch(previous, batch) : batch));
-        setThin(spinePx > 0 && spinePx < THIN_SPINE_PX);
+        setSpinePx(measured);
+        setShotCapacity(maxBooksPerShot(canvas.width));
         setShots((previous) => (appending ? previous + 1 : 1));
         if (!appending) setDropped(new Set());
         setAppending(false);
@@ -95,6 +91,9 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
   }, []);
 
   const kept = books.filter((book) => !dropped.has(book.id));
+  // 책등이 목표 굵기에 못 미치면, 이번 사진을 몇 등분해 다시 찍어야 하는지 알려 준다.
+  const thin = spinePx > 0 && spinePx < TARGET_SPINE_PX;
+  const splitInto = thin ? Math.max(2, Math.ceil(TARGET_SPINE_PX / spinePx)) : 0;
 
   return (
     <section className="scan-sheet" data-testid="scan-sheet">
@@ -147,8 +146,8 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
             </p>
             {thin && (
               <p className="notice" data-testid="thin-spine-notice">
-                책등이 얇아 제목이 잘 안 읽혀요. 여기까지 두고 <b>이어서 찍기</b>로 나머지를
-                가까이에서 찍으면 또렷해집니다.
+                책등이 {spinePx}px로 얇아 제목이 뭉개졌어요. 이 카메라는 한 장에{" "}
+                {shotCapacity}권까지예요. <b>{splitInto}번에 나눠</b> 가까이에서 찍어 주세요.
               </p>
             )}
             <ol className="scan-preview">

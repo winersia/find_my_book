@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toWorkingCanvas } from "../lib/image";
+import { maxBooksPerShot, toWorkingCanvas } from "../lib/image";
 
 interface Props {
   onCapture: (canvas: HTMLCanvasElement) => void;
@@ -21,6 +21,8 @@ export function CameraCapture({ onCapture, disabled, remaining, autoStart = fals
   const [active, setActive] = useState(false);
   /** 첫 프레임이 들어오기 전에는 찍어도 빈 사진이 된다. 그 사이 버튼을 막는다. */
   const [ready, setReady] = useState(false);
+  /** 이 카메라가 실제로 주는 가로 화소. 한 번에 몇 권까지 담을지가 여기서 정해진다. */
+  const [captureWidth, setCaptureWidth] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const stop = useCallback(() => {
@@ -28,6 +30,7 @@ export function CameraCapture({ onCapture, disabled, remaining, autoStart = fals
     streamRef.current = null;
     setActive(false);
     setReady(false);
+    setCaptureWidth(0);
   }, []);
 
   useEffect(() => stop, [stop]);
@@ -49,8 +52,11 @@ export function CameraCapture({ onCapture, disabled, remaining, autoStart = fals
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: "environment" },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
+          // 책등 하나가 사진 가로의 2%도 안 되는 칸이 흔하다. 1920px로 받으면
+          // 책등이 40px도 안 돼 한글 획이 뭉개진다. 기기가 주는 만큼 크게 받는다.
+          // ideal 이라 지원하지 않는 기기는 알아서 낮춰 준다.
+          width: { ideal: 3840 },
+          height: { ideal: 2160 },
         },
         audio: false,
       });
@@ -68,6 +74,9 @@ export function CameraCapture({ onCapture, disabled, remaining, autoStart = fals
       setReady(false);
     }
   }, []);
+
+  // 이 기종의 카메라로 한 번에 담아도 제목이 읽히는 권수.
+  const maxBooks = maxBooksPerShot(captureWidth);
 
   const shoot = useCallback(async () => {
     const video = videoRef.current;
@@ -95,10 +104,21 @@ export function CameraCapture({ onCapture, disabled, remaining, autoStart = fals
   return (
     <section className="camera">
       <div className={`viewport ${active ? "live" : ""}`}>
-        <video ref={videoRef} playsInline muted onLoadedMetadata={(e) => setReady(e.currentTarget.videoWidth > 0)} />
+        <video
+          ref={videoRef}
+          playsInline
+          muted
+          onLoadedMetadata={(e) => {
+            setReady(e.currentTarget.videoWidth > 0);
+            setCaptureWidth(e.currentTarget.videoWidth);
+          }}
+        />
         {active ? (
           <div className="frame-guide" aria-hidden="true">
-            <span>칸을 꽉 채워 주세요</span>
+            <span>
+              칸을 꽉 채워 주세요
+              {maxBooks > 0 && ` · 한 번에 ${maxBooks}권까지`}
+            </span>
           </div>
         ) : (
           <div className="viewport-placeholder">

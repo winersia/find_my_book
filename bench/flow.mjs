@@ -130,6 +130,9 @@ const page = await context.newPage();
 page.on("pageerror", (error) => console.log("  [페이지오류]", String(error).slice(0, 160)));
 page.on("dialog", (dialog) => dialog.accept());
 
+/** 촬영 화면의 안내 문구. 기기 해상도에 따라 권수가 달라진다. */
+let cameraGuide = "";
+
 /** 고른 칸을 찍어 인식한 뒤 칸에 넣는다. 인식 결과 제목을 돌려준다. */
 async function scanIntoSelectedSlot() {
   await page.click('[data-testid="scan-slot"]');
@@ -145,6 +148,8 @@ async function scanIntoSelectedSlot() {
     },
     { timeout: 20000 },
   );
+  // 카메라 안내는 이 기기가 실제로 주는 화소로 계산한 권수를 함께 보여 준다.
+  cameraGuide = await page.$eval(".frame-guide span", (el) => el.textContent.replace(/\s+/g, " ").trim());
   countTap();
   await shutter.click();
   await page.waitForSelector('[data-testid="apply-scan"]', { timeout: 600000 });
@@ -309,6 +314,13 @@ check(
   "같은 칸을 다시 찍으면 내용이 교체된다",
   afterRescan.length === rescanned.length && afterRescan.length !== beforeRescan + rescanned.length,
   `${beforeRescan}권 → ${afterRescan.length}권`,
+);
+
+// 8-2. 촬영 안내가 이 기기 기준 권수를 알려 준다 (가짜 카메라는 1100px → 11권)
+check(
+  "촬영 안내에 이 기기로 한 번에 담을 권수가 나온다",
+  /한 번에 \d+권까지/.test(cameraGuide),
+  cameraGuide,
 );
 
 // 9-2. 나눠 찍기: 같은 칸을 두 번 찍어 이어 붙인다

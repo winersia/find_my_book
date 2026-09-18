@@ -13,6 +13,29 @@
 const MAX_EDGE = 3600;
 const THUMB_EDGE = 240;
 
+/**
+ * 한 권을 제대로 읽으려면 책등이 사진에서 이 정도(px) 굵기는 돼야 한다.
+ *
+ * 실제 책장 사진으로 잰 값이 근거다. 같은 사진을 줄여 가며 읽히면 정답 여섯 글자가
+ * 그대로 들어 있는 제목이 책등 48px에서 11개, 24px에서 4개, 16px에서 0개였다.
+ * 48px 위쪽은 원본 해상도가 거기까지라 재지 못했다. 80px은 거기에 더해,
+ * tesseract 한글 모델이 글자 높이 35~45px를 좋아하고 제목 글자가 책등 너비의
+ * 3분의 2쯤을 차지한다는 점에서 잡은 목표치다. 재서 확인한 값이 아니다.
+ */
+export const TARGET_SPINE_PX = 80;
+
+/** 사진 가로에서 책장이 실제로 차지하는 몫. 잘 찍어도 양옆에 벽이 조금 남는다. */
+const SHELF_FILL = 0.85;
+
+/**
+ * 이 가로 크기의 사진 한 장에 몇 권까지 담아야 제목이 읽히는지.
+ * 기종마다 카메라가 주는 화소가 달라, 권수 기준도 기종마다 달라야 한다.
+ */
+export function maxBooksPerShot(photoWidth: number): number {
+  if (!photoWidth) return 0;
+  return Math.max(1, Math.floor((photoWidth * SHELF_FILL) / TARGET_SPINE_PX));
+}
+
 /** 파일이나 캔버스를 OCR용 캔버스로 만든다. */
 export async function toWorkingCanvas(source: Blob | HTMLCanvasElement): Promise<HTMLCanvasElement> {
   const bitmap = source instanceof HTMLCanvasElement ? source : await createImageBitmap(source);
