@@ -25,6 +25,20 @@
         };
       };
 
+      // 잘라낸 책등을 눈으로 확인할 때 쓴다 (bench/crops.mjs).
+      window.__crops = async (dataUrl, options = {}) => {
+        const blob = await (await fetch(dataUrl)).blob();
+        const canvas = await toWorkingCanvas(blob);
+        const result = segmentSpines(canvas, options);
+        return result.bands.map((band) => {
+          const rotated = band.crop(90);
+          const png = rotated.canvas.toDataURL("image/png").split(",")[1];
+          const upright = band.crop(0);
+          const uprightPng = upright.canvas.toDataURL("image/png").split(",")[1];
+          return { x0: band.x0, x1: band.x1, rotated: png, upright: uprightPng };
+        });
+      };
+
       // Playwright가 호출한다. 이미지를 넣으면 인식 결과를 돌려준다.
       window.__bench = async (dataUrl, options) => {
         const blob = await (await fetch(dataUrl)).blob();
@@ -36,6 +50,8 @@
           tiltDeg: result.tiltDeg,
           usedFallback: result.usedFallback,
           readings: result.readings.map((r) => ({
+            x0: r.x0,
+            x1: r.x1,
             text: r.text,
             alternatives: r.alternatives,
             confidence: r.confidence,

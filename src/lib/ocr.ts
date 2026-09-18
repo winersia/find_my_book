@@ -1,5 +1,12 @@
 import { PSM, createWorker, type Worker } from "tesseract.js";
-import { segmentSpines, wholeImageVariants, type SegmentOptions, type SpineVariant } from "./segment";
+import {
+  releaseVariants,
+  segmentSpines,
+  type SpineBand,
+  wholeImageVariants,
+  type SegmentOptions,
+  type SpineVariant,
+} from "./segment";
 
 /** 책등 한 권을 읽은 결과 */
 export interface SpineReading {
@@ -53,10 +60,24 @@ const VERTICAL_LANG = "kor_vert";
  * 항상 읽으면 영문 책장에서 시간만 50% 더 든다.
  */
 const VERTICAL_RETRY_SCORE = 70;
+/**
+ * 방향을 정하기 전에 세 방향을 다 읽어 볼 책 수.
+ *
+ * 한 칸에 꽂힌 책은 거의 다 같은 방향으로 제목이 쓰여 있다. 앞의 몇 권으로 방향을
+ * 정하면 나머지는 한 번씩만 읽으면 된다. 40권짜리 칸에서 읽는 시간이 절반 아래로 준다.
+ * 정한 방향이 시원찮게 읽히는 책(거꾸로 꽂힌 책 등)은 그때 다시 세 방향을 다 본다.
+ */
+const DIRECTION_PROBE = 4;
 /** 제목 앞뒤의 짧은 조각을 군더더기로 볼 신뢰도 기준 */
 const EDGE_NOISE_CONFIDENCE = 55;
 /** 점수를 낼 때 한글 음절 하나를 라틴 글자 몇 개로 칠지 */
 const HANGUL_WEIGHT = 1.6;
+/**
+ * 제목으로 볼 글자 크기 (책등에서 가장 큰 글자 대비).
+ * 책등에는 제목 말고도 출판사·시리즈 번호·지은이·분류가 잔글씨로 들어간다.
+ * 사람이 제목을 알아보는 방식 그대로, 눈에 띄게 큰 글자만 남긴다.
+ */
+const TITLE_SIZE_RATIO = 0.55;
 /**
  * 언어 데이터를 받는 데 이만큼 걸리면 실패로 본다.
  * tesseract.js 는 내려받기가 막혀도 예외를 던지지 않고 그대로 멈춰 있어서,
@@ -192,22 +213,29 @@ export async function readShelf(
   const minBookWidth = medianWidth * 0.5;
 
   const readings: SpineReading[] = [];
+  const votes: number[] = [];
+  let settled: number | null = null;
+
   for (const [index, band] of bands.entries()) {
     if (signal?.aborted) break;
     onProgress?.({ phase: "책등 읽는 중", done: index, total: bands.length });
 
-    const candidates = await Promise.all(band.variants.map((variant) => readVariant(worker, variant)));
-    candidates.sort((a, b) => b.score - a.score);
+    const wanted = verticalWorker ? [90, -90, 0] : [90, -90];
+    const first = settled !== null && verticalMode !== "always" ? [settled] : wanted;
+    let candidates = await readDirections(worker, verticalWorker, band, first);
 
-    // 돌려 읽은 결과가 시원찮으면 세로로 쌓인 한글일 수 있다. 그런 책등만 한 번 더 읽는다.
-    const weak = (candidates[0]?.score ?? 0) < VERTICAL_RETRY_SCORE;
-    if (verticalWorker && (verticalMode === "always" || weak)) {
-      candidates.push(await readVariant(verticalWorker, band.upright, true));
+    // 정한 방향으로 잘 안 읽히면 거꾸로 꽂혔거나 글자가 쌓인 책이다. 나머지 방향도 본다.
+    if ((candidates[0]?.score ?? 0) < VERTICAL_RETRY_SCORE && first.length < wanted.length) {
+      const rest = wanted.filter((deg) => !first.includes(deg));
+      candidates = [...candidates, ...(await readDirections(worker, verticalWorker, band, rest))];
       candidates.sort((a, b) => b.score - a.score);
     }
 
     const best = candidates[0];
     if (!best) continue;
+    if (best.score >= VERTICAL_RETRY_SCORE) votes.push(best.deg);
+    if (settled === null && votes.length >= DIRECTION_PROBE) settled = majority(votes);
+
     // 제목을 못 읽었어도 두께가 책만 하면 자리를 남긴다.
     // 실제 권수와 순서가 맞아야 나중에 손으로 고칠 수 있다.
     if (!best.text && band.x1 - band.x0 < minBookWidth) continue;
@@ -231,10 +259,40 @@ export async function readShelf(
 }
 
 interface Candidate {
+  /** 어느 방향으로 읽었는지 (90/-90 은 돌려 세운 글자, 0 은 쌓인 글자) */
+  deg: number;
   text: string;
   /** 다듬기 전 OCR 원문 */
   raw: string;
   score: number;
+}
+
+/** 한 책등을 주어진 방향들로 읽는다. 크롭은 읽자마자 버린다. */
+async function readDirections(
+  worker: Worker,
+  verticalWorker: Worker | null,
+  band: SpineBand,
+  degrees: number[],
+): Promise<Candidate[]> {
+  const results = await Promise.all(
+    degrees.map(async (deg) => {
+      const variant = band.crop(deg);
+      const engine = deg === 0 && verticalWorker ? verticalWorker : worker;
+      try {
+        return await readVariant(engine, variant, deg === 0);
+      } finally {
+        releaseVariants([variant]);
+      }
+    }),
+  );
+  return results.sort((a, b) => b.score - a.score);
+}
+
+/** 가장 많이 나온 값. 방향 투표에 쓴다. */
+function majority(values: number[]): number {
+  const tally = new Map<number, number>();
+  for (const value of values) tally.set(value, (tally.get(value) ?? 0) + 1);
+  return [...tally.entries()].sort((a, b) => b[1] - a[1])[0][0];
 }
 
 /**
@@ -246,12 +304,19 @@ async function readVariant(
   variant: SpineVariant,
   stacked = false,
 ): Promise<Candidate> {
+  const deg = variant.deg;
   const { data } = await worker.recognize(variant.canvas, {}, { blocks: true, text: true });
-  const words = collectWords(data.blocks);
+  // 크롭은 책등 모양 그대로 가늘고 길다. 짧은 쪽이 곧 책등을 가로지르는 방향이다.
+  const across = variant.canvas.width >= variant.canvas.height ? "y" : "x";
+  const title = keepTitleLines(collectLines(data.blocks), across).flatMap((line) => line.words);
   const raw = (data.text ?? "").replace(/\s+/g, " ").trim();
-  const trimmed = trimEdgeNoise(words) || raw;
-  const text = cleanText(stacked ? trimmed.replace(/\s+/g, "") : trimmed);
-  return { text, raw, score: scoreWords(words) };
+  const trimmed = trimEdgeNoise(title) || raw;
+  // 쌓인 글자는 띄어쓰기가 없다. 다만 군더더기 토막부터 걸러 낸 뒤에 붙여야 한다.
+  // 먼저 붙이면 "2#.배고픈늑대와…" 처럼 기호까지 제목에 눌어붙는다.
+  const cleaned = cleanText(trimmed);
+  const text = stacked ? cleaned.replace(/\s+/g, "") : cleaned;
+  // 점수도 제목 글자만 보고 낸다. 잔글씨를 길게 오독한 쪽이 이기면 방향까지 틀린다.
+  return { deg, text, raw, score: scoreWords(title) };
 }
 
 /**
@@ -264,7 +329,11 @@ function trimEdgeNoise(words: LooseWord[]): string {
     if (!word) return false;
     const text = (word.text ?? "").trim();
     const letters = (text.match(/[A-Za-z가-힣0-9]/g) ?? []).length;
-    return letters > 0 && letters <= 3 && (word.confidence ?? 0) < EDGE_NOISE_CONFIDENCE;
+    if (!letters) return true; // 기호만 남은 토막
+    const confidence = word.confidence ?? 0;
+    // 한글은 한두 글자로도 제목의 일부일 때가 많다. 확신이 아주 낮을 때만 뗀다.
+    if (/[가-힣]/.test(text)) return letters <= 2 && confidence < 40;
+    return letters <= 3 && confidence < EDGE_NOISE_CONFIDENCE;
   };
 
   let start = 0;
@@ -274,6 +343,39 @@ function trimEdgeNoise(words: LooseWord[]): string {
 
   const kept = words.slice(start, end).map((word) => (word.text ?? "").trim());
   return kept.join(" ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * 글자 한 줄의 크기.
+ *
+ * 낱말 하나로 재면 안 된다. 라틴 문자는 "and" 처럼 위아래로 삐침이 없는 낱말의 상자가
+ * "Thinking" 의 절반밖에 안 돼서, 같은 제목인데도 절반이 잘려 나간다.
+ * 줄 전체 상자를 쓰면 같은 줄에 있는 낱말은 모두 같은 크기로 본다.
+ */
+function lineSize(line: LooseLine, across: "x" | "y"): number {
+  const box = line.bbox;
+  if (!box) return 0;
+  const size = across === "y" ? (box.y1 ?? 0) - (box.y0 ?? 0) : (box.x1 ?? 0) - (box.x0 ?? 0);
+  return size > 0 ? size : 0;
+}
+
+/**
+ * 책등에서 제목 줄만 남긴다.
+ *
+ * 한 책등에는 제목 말고도 출판사 이름, 시리즈 번호, 지은이, 분류가 잔글씨로 찍혀 있다.
+ * 전부 이어 붙이면 "ChildApple 드림 28 곰이의 카레라이스 건강과 안전" 같은 게 나오고,
+ * 잔글씨를 길게 오독한 쪽이 점수까지 이겨 읽기 방향마저 틀린다.
+ * 제목은 늘 책등에서 가장 큰 글자다. 그 크기에 못 미치는 줄은 버린다.
+ */
+function keepTitleLines(lines: LooseLine[], across: "x" | "y"): LooseLine[] {
+  const sized = lines.filter((line) => (line.text ?? "").trim() && lineSize(line, across) > 0);
+  if (sized.length < 2) return lines;
+
+  const sizes = sized.map((line) => lineSize(line, across)).sort((a, b) => a - b);
+  // 최댓값 대신 상위 10% 값을 기준으로 삼는다. 크게 번진 오독 한 줄에 기준이 끌려가지 않게.
+  const largest = sizes[Math.floor(sizes.length * 0.9)] ?? sizes[sizes.length - 1];
+  const kept = sized.filter((line) => lineSize(line, across) >= largest * TITLE_SIZE_RATIO);
+  return kept.length ? kept : lines;
 }
 
 /** 분할 실패 시: 사진 전체를 0/90/-90도로 읽고 줄마다 후보를 만든다. */
@@ -292,9 +394,9 @@ async function readWholeImage(
 
     const { data } = await worker.recognize(variant.canvas, {}, { blocks: true, text: true });
     for (const line of collectLines(data.blocks)) {
-      const text = cleanText(line.text);
+      const text = cleanText(line.text ?? "");
       if (!text) continue;
-      const score = scoreWords(line.words ?? []);
+      const score = scoreWords(line.words);
       if (score < 40) continue;
       readings.push({
         x0: 0,
@@ -302,7 +404,7 @@ async function readWholeImage(
         color: "#6b6257",
         widthRatio: 0,
         text,
-        raw: line.text.replace(/\s+/g, " ").trim(),
+        raw: (line.text ?? "").replace(/\s+/g, " ").trim(),
         alternatives: [],
         confidence: Math.min(1, score / 100),
       });
@@ -323,21 +425,29 @@ function countLetters(text: string): number {
   return latin + hangul * HANGUL_WEIGHT;
 }
 
-type LooseWord = { text?: string; confidence?: number };
-type LooseLine = { text?: string; words?: LooseWord[] };
+type LooseWord = {
+  text?: string;
+  confidence?: number;
+  bbox?: { x0?: number; y0?: number; x1?: number; y1?: number };
+};
+type LooseLine = {
+  text?: string;
+  words: LooseWord[];
+  bbox?: { x0?: number; y0?: number; x1?: number; y1?: number };
+};
 type LooseBlock = { paragraphs?: { lines?: LooseLine[] }[] };
 
-function collectLines(blocks: unknown): { text: string; words: LooseWord[] }[] {
+function collectLines(blocks: unknown): LooseLine[] {
   const list = (blocks as LooseBlock[] | null | undefined) ?? [];
   return list.flatMap((block) =>
     (block.paragraphs ?? []).flatMap((paragraph) =>
-      (paragraph.lines ?? []).map((line) => ({ text: line.text ?? "", words: line.words ?? [] })),
+      (paragraph.lines ?? []).map((line) => ({
+        text: line.text ?? "",
+        words: line.words ?? [],
+        bbox: line.bbox,
+      })),
     ),
   );
-}
-
-function collectWords(blocks: unknown): LooseWord[] {
-  return collectLines(blocks).flatMap((line) => line.words);
 }
 
 /**
@@ -350,15 +460,27 @@ function scoreWords(words: LooseWord[]): number {
   let weight = 0;
   let sum = 0;
   let letters = 0;
+  let solid = 0;
   let junk = 0;
+  let hangul = 0;
+  let latin = 0;
 
   for (const word of words) {
     const text = (word.text ?? "").trim();
     if (!text) continue;
-    const letterCount = countLetters(text);
+    const syllables = (text.match(/[가-힣]/g) ?? []).length;
+    const alphabet = (text.match(/[A-Za-z]/g) ?? []).length;
+    hangul += syllables;
+    latin += alphabet;
     junk += (text.match(/[^A-Za-z가-힣0-9\s.,'":\-&!?]/g) ?? []).length;
+
+    const letterCount = countLetters(text);
     letters += letterCount;
-    if (letterCount < 2) continue;
+    // 한글은 한 글자로도 뜻이 있다. 세로로 쌓인 제목은 음절 하나씩 떨어져 나오므로
+    // 두 글자 미만을 버리면 제대로 읽은 결과가 통째로 0점이 된다.
+    if (syllables === 0 && alphabet < 2) continue;
+    // 라틴 두 글자짜리 토막은 거꾸로 읽었을 때 쏟아진다. 알맹이로 치지 않는다.
+    if (syllables > 0 || alphabet >= 3) solid += letterCount;
     weight += letterCount;
     sum += (word.confidence ?? 0) * letterCount;
   }
@@ -366,7 +488,12 @@ function scoreWords(words: LooseWord[]): number {
   if (!weight) return 0;
   const junkPenalty = 1 - Math.min(0.6, junk / Math.max(4, letters + junk));
   const lengthBonus = Math.min(1, letters / 6);
-  return (sum / weight) * junkPenalty * lengthBonus;
+  // 한두 글자 토막만 잔뜩 나온 읽기는 대개 방향을 잘못 잡은 것이다.
+  const solidRatio = Math.max(0.25, solid / Math.max(1, letters));
+  // 한글이 나왔다면 방향을 제대로 잡았다는 뜻이다. 거꾸로 읽으면 라틴 잡동사니가 나온다.
+  const scriptBonus = hangul >= 2 ? 1 + 0.6 * (hangul / Math.max(1, hangul + latin)) : 1;
+
+  return (sum / weight) * junkPenalty * lengthBonus * solidRatio * scriptBonus;
 }
 
 /** OCR 결과에서 군더더기를 걷어낸다. */

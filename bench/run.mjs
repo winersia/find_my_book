@@ -123,6 +123,8 @@ function grade(truth, readings) {
 
 const browser = await chromium.launch({
   executablePath: CHROMIUM,
+  // 가로채는 프록시 뒤에서는 크로미움의 TLS 1.3 핸드셰이크가 끊긴다.
+  args: ["--ssl-version-max=tls1.2"],
   proxy: process.env.HTTPS_PROXY
     ? { server: process.env.HTTPS_PROXY, bypass: "localhost,127.0.0.1" }
     : undefined,

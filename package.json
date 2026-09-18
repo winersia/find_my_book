@@ -11,7 +11,12 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview --host",
     "typecheck": "tsc -b --pretty",
-    "fetch:langdata": "node scripts/fetch-langdata.mjs"
+    "fetch:langdata": "node scripts/fetch-langdata.mjs",
+    "bench": "node bench/run.mjs",
+    "bench:flow": "node bench/flow.mjs",
+    "bench:read": "node bench/read.mjs",
+    "bench:segment": "node bench/segment.mjs",
+    "bench:crops": "node bench/crops.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",
