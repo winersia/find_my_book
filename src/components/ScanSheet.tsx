@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { booksFromReadings, LOW_CONFIDENCE, type ShelfBook } from "../lib/bookcase";
+import { appendBatch, booksFromReadings, LOW_CONFIDENCE, type ShelfBook } from "../lib/bookcase";
 import { enrichBooks } from "../lib/enrich";
 import { toThumbnail } from "../lib/image";
 import { hasOcrModel, readShelf, type ScanProgress } from "../lib/ocr";
@@ -20,6 +20,15 @@ type Stage = "capture" | "scanning" | "review";
 /** 책등 한 권을 읽는 데 걸리는 대략의 시간. 남은 시간을 어림잡아 보여 주는 데 쓴다. */
 const SECONDS_PER_BOOK = 3;
 
+/**
+ * 책등이 이 굵기(px)에 못 미치면 나눠 찍기를 권한다.
+ *
+ * 책등 두께를 절반(24px)으로 줄여 재 보면 제목이 제대로 읽힌 권수가 11권에서 4권으로
+ * 떨어진다. 얇은 책이 빽빽한 칸은 한 번에 담을수록 한 권이 차지하는 화소가 줄어
+ * 어떤 후처리로도 살릴 수 없다. 절반씩 나눠 찍으면 그만큼 굵어진다.
+ */
+const THIN_SPINE_PX = 60;
+
 /** 칸 하나를 찍어 읽는 화면. 결과를 확인하고 고친 뒤 그 칸에 넣는다. */
 export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClose }: Props) {
   const [stage, setStage] = useState<Stage>("capture");
@@ -28,6 +37,11 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
   const [dropped, setDropped] = useState<Set<string>>(new Set());
   const [photo, setPhoto] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [shots, setShots] = useState(0);
+  /** 이번 촬영을 앞 결과 뒤에 이어 붙일지 (나눠 찍기), 통째로 바꿀지 */
+  const [appending, setAppending] = useState(false);
+  /** 책등이 얇아 나눠 찍기를 권할 상황인지 */
+  const [thin, setThin] = useState(false);
   const abort = useRef<AbortController | null>(null);
 
   const firstRun = !hasOcrModel(langs);
@@ -36,7 +50,8 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
     async (canvas: HTMLCanvasElement) => {
       setStage("scanning");
       setError(null);
-      setPhoto(toThumbnail(canvas));
+      // 칸 미리보기는 첫 사진을 쓴다. 나눠 찍으면 대개 첫 장이 왼쪽 끝이다.
+      setPhoto((previous) => (appending && previous ? previous : toThumbnail(canvas)));
       const controller = new AbortController();
       abort.current = controller;
 
@@ -48,9 +63,17 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
         });
         if (controller.signal.aborted) return;
 
+        // 책등이 실제로 몇 px인지 본다. 이것이 제목을 읽을 수 있는지를 거의 다 결정한다.
+        const widths = result.readings.map((reading) => reading.x1 - reading.x0).sort((a, b) => a - b);
+        const spinePx = widths[Math.floor(widths.length / 2)] ?? 0;
+
         const recognized = booksFromReadings(result.readings);
-        setBooks(enrich ? await enrichBooks(recognized) : recognized);
-        setDropped(new Set());
+        const batch = enrich ? await enrichBooks(recognized) : recognized;
+        setBooks((previous) => (appending ? appendBatch(previous, batch) : batch));
+        setThin(spinePx > 0 && spinePx < THIN_SPINE_PX);
+        setShots((previous) => (appending ? previous + 1 : 1));
+        if (!appending) setDropped(new Set());
+        setAppending(false);
         setStage("review");
       } catch (caught) {
         if (controller.signal.aborted) return;
@@ -61,7 +84,7 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
         setProgress(null);
       }
     },
-    [enrich, langs],
+    [appending, enrich, langs],
   );
 
   const cancel = useCallback(() => {
@@ -84,10 +107,16 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
 
       {stage === "capture" && (
         <>
-          {firstRun && (
-            <p className="notice" data-testid="first-run-notice">
-              처음 한 번만 인식 데이터 4MB를 받아요. 사진은 기기 밖으로 나가지 않습니다.
+          {appending ? (
+            <p className="notice" data-testid="append-notice">
+              {shots + 1}번째 사진 — 방금 찍은 곳 다음부터, 한두 권만 겹치게 찍어 주세요.
             </p>
+          ) : (
+            firstRun && (
+              <p className="notice" data-testid="first-run-notice">
+                처음 한 번만 인식 데이터 4MB를 받아요. 사진은 기기 밖으로 나가지 않습니다.
+              </p>
+            )
           )}
           <CameraCapture onCapture={scan} disabled={false} remaining={1} autoStart />
           {error && <p className="error">{error}</p>}
@@ -113,8 +142,15 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
           <>
             <p className="notes" data-testid="scan-summary">
               왼쪽부터 {books.length}권
+              {shots > 1 && ` · 사진 ${shots}장`}
               {existingCount > 0 && ` · 이 칸의 ${existingCount}권과 바뀝니다`}
             </p>
+            {thin && (
+              <p className="notice" data-testid="thin-spine-notice">
+                책등이 얇아 제목이 잘 안 읽혀요. 여기까지 두고 <b>이어서 찍기</b>로 나머지를
+                가까이에서 찍으면 또렷해집니다.
+              </p>
+            )}
             <ol className="scan-preview">
               {books.map((book, order) => {
                 const isDropped = dropped.has(book.id);
@@ -168,8 +204,24 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
               >
                 {kept.length}권 이 칸에 넣기
               </button>
-              <button type="button" onClick={() => setStage("capture")}>
-                다시 찍기
+              <button
+                type="button"
+                onClick={() => {
+                  setAppending(true);
+                  setStage("capture");
+                }}
+                data-testid="append-scan"
+              >
+                이어서 찍기
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAppending(false);
+                  setStage("capture");
+                }}
+              >
+                처음부터 다시
               </button>
             </div>
           </>

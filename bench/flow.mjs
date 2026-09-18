@@ -158,6 +158,38 @@ async function scanIntoSelectedSlot() {
   return recognized;
 }
 
+/** 칸을 찍되, 넣기 전에 "이어서 찍기"로 한 장 더 찍어 이어 붙인다. */
+async function scanTwiceIntoSelectedSlot() {
+  const shoot = async () => {
+    const shutter = page.locator('[data-testid="scan-sheet"] button.shutter');
+    await shutter.waitFor({ state: "visible", timeout: 20000 });
+    await page.waitForFunction(
+      () => {
+        const button = document.querySelector('[data-testid="scan-sheet"] button.shutter');
+        return button && !button.disabled;
+      },
+      { timeout: 20000 },
+    );
+    countTap();
+    await shutter.click();
+    await page.waitForSelector('[data-testid="apply-scan"]', { timeout: 600000 });
+  };
+
+  await page.click('[data-testid="scan-slot"]');
+  await page.waitForSelector('[data-testid="scan-sheet"]');
+  await shoot();
+  const afterFirst = await page.$$eval(".scan-preview .scan-title", (els) => els.length);
+
+  await page.click('[data-testid="append-scan"]');
+  await shoot();
+  const afterSecond = await page.$$eval(".scan-preview .scan-title", (els) => els.length);
+  const summary = await page.$eval('[data-testid="scan-summary"]', (el) => el.textContent.trim());
+
+  await page.click('[data-testid="apply-scan"]');
+  await page.waitForSelector('[data-testid="scan-sheet"]', { state: "detached" });
+  return { afterFirst, afterSecond, summary };
+}
+
 /** 부가 기능은 접혀 있다. 필요한 때만 펼친다. */
 async function openTools() {
   const details = page.locator("details.more-tools");
@@ -278,6 +310,19 @@ check(
   afterRescan.length === rescanned.length && afterRescan.length !== beforeRescan + rescanned.length,
   `${beforeRescan}권 → ${afterRescan.length}권`,
 );
+
+// 9-2. 나눠 찍기: 같은 칸을 두 번 찍어 이어 붙인다
+const split = await scanTwiceIntoSelectedSlot();
+const afterSplit = await slotTitles();
+check(
+  "나눠 찍으면 앞 결과 뒤에 이어 붙는다",
+  split.afterSecond > split.afterFirst &&
+    afterSplit.length === split.afterSecond &&
+    split.summary.includes("사진 2장"),
+  `${split.afterFirst}권 → ${split.afterSecond}권 · ${split.summary}`,
+);
+// 다음 점검들이 한 장짜리 결과를 기대하므로 되돌려 둔다.
+await scanIntoSelectedSlot();
 
 // 10. 다른 칸을 찍어도 앞 칸은 그대로다
 const slot0Before = await slotCount(0);
