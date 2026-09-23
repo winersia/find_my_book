@@ -69,6 +69,13 @@ export interface SegmentOptions {
   extentMargin?: number;
   /** 최대 밴드 수 */
   maxBands?: number;
+  /**
+   * 잘라낸 책등을 원본보다 몇 배까지 키울지.
+   * 키운다고 글자가 또렷해지지 않는다. 오히려 그림이 커져 OCR의 줄 찾기가 흔들린다.
+   */
+  maxUpscale?: number;
+  /** 잘라낸 책등의 최대 길이(px). 가까이서 찍으면 책등이 사진 세로를 꽉 채운다. */
+  maxCropLength?: number;
   /** 경계 점수 프로파일을 함께 돌려준다 (bench/segment.mjs 진단용) */
   debug?: boolean;
 }
@@ -83,6 +90,8 @@ const DEFAULTS = {
   targetSpineWidth: 150,
   extentMargin: -0.02,
   maxBands: 80,
+  maxUpscale: 1.5,
+  maxCropLength: 2000,
   debug: false,
 } satisfies Required<SegmentOptions>;
 
@@ -183,14 +192,10 @@ export function segmentSpines(source: HTMLCanvasElement, options: SegmentOptions
 
   const merged = mergeTwins(raw, medians, colorScore, aw);
 
-  // 벽이나 선반 여백은 글자도 무늬도 없다. 책들의 평균과 견줘 걸러 낸다.
-  const inks = merged.map((band) => band.ink).sort((a, b) => a - b);
-  const medianInk = inks[Math.floor(inks.length / 2)] ?? 0;
-  const inkFloor = Math.max(0.015, medianInk * 0.3);
+  const kept = dropEdgeBackground(merged);
 
-  for (const band of merged) {
+  for (const band of kept) {
     if (bands.length >= opts.maxBands) break;
-    if (band.ink < inkFloor) continue;
 
     const width = band.x1 - band.x0;
     const inset = Math.min(Math.round(width * opts.sideInset), Math.floor((width - 2) / 2));
@@ -210,6 +215,8 @@ export function segmentSpines(source: HTMLCanvasElement, options: SegmentOptions
         originalX0: band.x0 * scale,
         originalX1: band.x1 * scale,
         targetWidth: opts.targetSpineWidth,
+        maxUpscale: opts.maxUpscale,
+        maxLength: opts.maxCropLength,
         slope: bandSlope,
       }),
       color,
@@ -237,6 +244,29 @@ export function segmentSpines(source: HTMLCanvasElement, options: SegmentOptions
 
 /** 이만큼 긴 세로선이 있어야 경계로 온전히 쳐 준다 (가장 긴 세로선 대비). */
 const EDGE_SUPPORT = 0.55;
+
+/**
+ * 책장 벽이나 빈 자리를 양 끝에서만 떼어낸다.
+ *
+ * 벽은 글자도 무늬도 없어 무늬 양(ink)이 눈에 띄게 적다. 하지만 이 기준을 가운데
+ * 밴드에까지 들이대면 안 된다. 사진 한쪽이 그늘지면 그쪽 책들도 무늬 양이 똑같이
+ * 줄어서, 그늘에 든 책이 통째로 "배경"으로 버려진다. 실제로 가까이서 찍은 사진에서
+ * 어두운 책 네 권이 한꺼번에 사라졌다. 배경은 어차피 사진 양 끝에만 있다.
+ */
+function dropEdgeBackground(
+  bands: { x0: number; x1: number; ink: number }[],
+): { x0: number; x1: number; ink: number }[] {
+  if (bands.length < 3) return bands;
+  const inks = bands.map((band) => band.ink).sort((a, b) => a - b);
+  const median = inks[Math.floor(inks.length / 2)] ?? 0;
+  const floor = Math.max(0.015, median * 0.3);
+
+  let from = 0;
+  let to = bands.length - 1;
+  while (from < to && bands[from].ink < floor) from++;
+  while (to > from && bands[to].ink < floor) to--;
+  return bands.slice(from, to + 1);
+}
 
 /** 같은 책의 바탕색으로 볼 색 차이 (0~255). */
 const TWIN_COLOR_DISTANCE = 12;
@@ -802,6 +832,10 @@ interface CropSpec {
   originalX0: number;
   originalX1: number;
   targetWidth: number;
+  /** 원본보다 몇 배까지 키울지 */
+  maxUpscale: number;
+  /** 잘라낸 책등의 최대 길이(px) */
+  maxLength: number;
   /** 이 책등이 기운 정도 (아래로 1px 갈 때 오른쪽으로 몇 px). */
   slope: number;
 }
@@ -814,7 +848,17 @@ function cropBand(
   const width = Math.max(1, Math.round(spec.x1 - spec.x0));
   const height = Math.max(1, Math.round(spec.bottom - spec.top));
   // 얇은 책은 원본에서도 20~30px밖에 안 된다. 목표 너비까지 키울 수 있게 배율을 넉넉히 둔다.
-  const scale = Math.min(8, Math.max(1, spec.targetWidth / width));
+  // 다만 길이에는 한도를 둔다. 가까이서 찍으면 책등이 사진 세로를 꽉 채워,
+  // 그대로 키우면 만 픽셀이 넘는 띠가 되어 OCR이 한 줄로 보지 못한다.
+  // 키우는 데는 두 가지 한도를 둔다.
+  //  - 배율: 원본에 없는 획이 생기지는 않는다. 크게만 만들면 OCR의 줄 찾기가 흔들린다.
+  //  - 길이: 가까이서 찍으면 책등이 사진 세로를 꽉 채워, 그대로 키우면 만 픽셀이 넘는
+  //    띠가 된다. 그 정도면 OCR이 한 줄로 보지 못하고 제목이 토막 난다.
+  const scale = Math.min(
+    spec.maxUpscale,
+    Math.max(1, spec.targetWidth / width),
+    Math.max(1, spec.maxLength / height),
+  );
   const centerX = (spec.x0 + spec.x1) / 2;
   const centerY = (spec.top + spec.bottom) / 2;
   // 기울인 만큼 원본에서 더 넓게 읽어야 한다.

@@ -37,6 +37,8 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
   const [spinePx, setSpinePx] = useState(0);
   /** 이 사진 한 장에 담아도 됐을 권수 */
   const [shotCapacity, setShotCapacity] = useState(0);
+  /** 세로로 찍었는지. 책장은 가로로 긴 대상이라 세로로 들면 화소를 절반 가까이 버린다. */
+  const [portrait, setPortrait] = useState(false);
   const abort = useRef<AbortController | null>(null);
 
   const firstRun = !hasOcrModel(langs);
@@ -67,6 +69,7 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
         setBooks((previous) => (appending ? appendBatch(previous, batch) : batch));
         setSpinePx(measured);
         setShotCapacity(maxBooksPerShot(canvas.width));
+        setPortrait(canvas.height > canvas.width);
         setShots((previous) => (appending ? previous + 1 : 1));
         if (!appending) setDropped(new Set());
         setAppending(false);
@@ -146,8 +149,17 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
             </p>
             {thin && (
               <p className="notice" data-testid="thin-spine-notice">
-                책등이 {spinePx}px로 얇아 제목이 뭉개졌어요. 이 카메라는 한 장에{" "}
-                {shotCapacity}권까지예요. <b>{splitInto}번에 나눠</b> 가까이에서 찍어 주세요.
+                책등이 {spinePx}px로 얇아 제목이 뭉개졌어요.{" "}
+                {portrait ? (
+                  <>
+                    휴대폰을 <b>가로로</b> 돌려 다시 찍어 주세요.
+                  </>
+                ) : (
+                  <>
+                    이 카메라는 한 장에 {shotCapacity}권까지예요.{" "}
+                    <b>{splitInto}번에 나눠</b> 찍어 주세요.
+                  </>
+                )}
               </p>
             )}
             <ol className="scan-preview">
