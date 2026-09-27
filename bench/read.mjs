@@ -52,6 +52,8 @@ result.readings.forEach((reading, index) => {
   const alternatives = reading.alternatives.length ? `   [대안 ${reading.alternatives.join(" | ")}]` : "";
   const where = `x${reading.x0}-${reading.x1}`.padEnd(12);
   console.log(`${String(index + 1).padStart(3)}. ${where} ${confidence}%  ${reading.text || "(못 읽음)"}${alternatives}`);
+  // 다듬기 전 OCR 원문. 다듬는 과정에서 제목을 잃고 있는지 보려고 같이 찍는다.
+  if (args.includes("--raw")) console.log(`     원문: ${reading.raw}`);
 });
 
 await browser.close();
