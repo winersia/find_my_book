@@ -37,8 +37,7 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
   const [spinePx, setSpinePx] = useState(0);
   /** 이 사진 한 장에 담아도 됐을 권수 */
   const [shotCapacity, setShotCapacity] = useState(0);
-  /** 세로로 찍었는지. 책장은 가로로 긴 대상이라 세로로 들면 화소를 절반 가까이 버린다. */
-  const [portrait, setPortrait] = useState(false);
+
   const abort = useRef<AbortController | null>(null);
 
   const firstRun = !hasOcrModel(langs);
@@ -69,7 +68,6 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
         setBooks((previous) => (appending ? appendBatch(previous, batch) : batch));
         setSpinePx(measured);
         setShotCapacity(maxBooksPerShot(canvas.width));
-        setPortrait(canvas.height > canvas.width);
         setShots((previous) => (appending ? previous + 1 : 1));
         if (!appending) setDropped(new Set());
         setAppending(false);
@@ -96,7 +94,6 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
   const kept = books.filter((book) => !dropped.has(book.id));
   // 책등이 목표 굵기에 못 미치면, 이번 사진을 몇 등분해 다시 찍어야 하는지 알려 준다.
   const thin = spinePx > 0 && spinePx < TARGET_SPINE_PX;
-  const splitInto = thin ? Math.max(2, Math.ceil(TARGET_SPINE_PX / spinePx)) : 0;
 
   return (
     <section className="scan-sheet" data-testid="scan-sheet">
@@ -149,17 +146,9 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
             </p>
             {thin && (
               <p className="notice" data-testid="thin-spine-notice">
-                책등이 {spinePx}px로 얇아 제목이 뭉개졌어요.{" "}
-                {portrait ? (
-                  <>
-                    휴대폰을 <b>가로로</b> 돌려 다시 찍어 주세요.
-                  </>
-                ) : (
-                  <>
-                    이 카메라는 한 장에 {shotCapacity}권까지예요.{" "}
-                    <b>{splitInto}번에 나눠</b> 찍어 주세요.
-                  </>
-                )}
+                책등이 {spinePx}px로 얇아 제목이 뭉개졌어요. <b>칸 하나만</b> 화면에 꽉 차게
+                다시 찍어 주세요. 한 장에 다 안 들어오면 [이어서 찍기]로 나눠 담을 수 있어요
+                (이 카메라는 한 장에 {shotCapacity}권까지).
               </p>
             )}
             <ol className="scan-preview">
