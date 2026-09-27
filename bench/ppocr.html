@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ko">
+  <head><meta charset="UTF-8" /><title>PaddleOCR 한국어 시험</title></head>
+  <body>
+    <p>PaddleOCR 한국어 인식 모델을 브라우저에서 돌려 본다 (bench/ppocr.mjs).</p>
+    <script type="module">
+      // 정확도만 재는 시험이므로 wasm 은 CDN 기본 경로를 그대로 쓴다.
+      // 실제로 붙일 때는 앱과 같이 배포해야 한다 (tesseract 자산과 같은 방식).
+      // vite 가 아니라 bench/ppocr.mjs 가 띄우는 작은 정적 서버로 연다.
+      // vite 는 public 안의 JS import 를 막아서 onnxruntime-web 을 이 방식으로 못 싣는다.
+      import * as ort from "./ort.bundle.min.mjs";
+      ort.env.wasm.wasmPaths = "./";
+      ort.env.wasm.numThreads = 1;
+
+      let session = null;
+      let dict = null;
+
+      async function load() {
+        if (session) return;
+        session = await ort.InferenceSession.create("./rec.onnx", { executionProviders: ["wasm"] });
+        const text = await (await fetch("./korean_dict.txt")).text();
+        // CTC: 0번은 blank, 끝에 공백 하나를 덧붙이는 것이 PaddleOCR 관례다.
+        dict = ["<blank>", ...text.split("\n"), " "];
+      }
+
+      /** 책등 크롭 한 장을 높이 48로 맞춰 정규화한다 (PP-OCR rec 규격). */
+      function toTensor(canvas) {
+        const H = 48;
+        const W = Math.max(32, Math.min(3200, Math.round((canvas.width / canvas.height) * H)));
+        const out = document.createElement("canvas");
+        out.width = W; out.height = H;
+        const ctx = out.getContext("2d");
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(canvas, 0, 0, W, H);
+        const px = ctx.getImageData(0, 0, W, H).data;
+        const data = new Float32Array(3 * H * W);
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const i = (y * W + x) * 4;
+            // BGR 순서, (v/255 - 0.5) / 0.5
+            data[0 * H * W + y * W + x] = (px[i + 2] / 255 - 0.5) / 0.5;
+            data[1 * H * W + y * W + x] = (px[i + 1] / 255 - 0.5) / 0.5;
+            data[2 * H * W + y * W + x] = (px[i] / 255 - 0.5) / 0.5;
+          }
+        }
+        return new ort.Tensor("float32", data, [1, 3, H, W]);
+      }
+
+      function ctcDecode(logits, steps, classes) {
+        let text = "";
+        let last = -1;
+        let sum = 0;
+        let n = 0;
+        for (let t = 0; t < steps; t++) {
+          let best = 0, bestV = -Infinity;
+          for (let c = 0; c < classes; c++) {
+            const v = logits[t * classes + c];
+            if (v > bestV) { bestV = v; best = c; }
+          }
+          if (best !== 0 && best !== last) {
+            text += dict[best] ?? "";
+            sum += bestV; n++;
+          }
+          last = best;
+        }
+        return { text: text.normalize("NFC"), confidence: n ? sum / n : 0 };
+      }
+
+      async function recognize(canvas) {
+        await load();
+        const tensor = toTensor(canvas);
+        const result = await session.run({ [session.inputNames[0]]: tensor });
+        const output = result[session.outputNames[0]];
+        const [, steps, classes] = output.dims;
+        return ctcDecode(output.data, steps, classes);
+      }
+
+      /** 이미지를 네 방향(가로 두 방향 × 흑백 둘)으로 읽어 본다. */
+      window.__ppocr = async (dataUrl) => {
+        const img = new Image();
+        img.src = dataUrl;
+        await img.decode();
+        const out = [];
+        for (const deg of [0, 90, -90]) {
+          const swap = deg % 180 !== 0;
+          const cv = document.createElement("canvas");
+          cv.width = swap ? img.height : img.width;
+          cv.height = swap ? img.width : img.height;
+          const ctx = cv.getContext("2d");
+          ctx.translate(cv.width / 2, cv.height / 2);
+          ctx.rotate((deg * Math.PI) / 180);
+          ctx.drawImage(img, -img.width / 2, -img.height / 2);
+          const r = await recognize(cv);
+          out.push({ deg, ...r });
+        }
+        return out.sort((a, b) => b.confidence - a.confidence);
+      };
+      window.__ppocrReady = true;
+    </script>
+  </body>
+</html>

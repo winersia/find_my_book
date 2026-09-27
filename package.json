@@ -16,7 +16,9 @@
     "bench:flow": "node bench/flow.mjs",
     "bench:read": "node bench/read.mjs",
     "bench:segment": "node bench/segment.mjs",
-    "bench:crops": "node bench/crops.mjs"
+    "bench:crops": "node bench/crops.mjs",
+    "fetch:ppocr": "node scripts/fetch-ppocr.mjs",
+    "bench:ppocr": "node bench/ppocr.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -29,7 +31,8 @@
     "@vitejs/plugin-react": "^4.3.4",
     "playwright": "^1.49.1",
     "typescript": "^5.7.3",
-    "vite": "^6.0.7"
+    "vite": "^6.0.7",
+    "onnxruntime-web": "^1.30.0"
   },
   "engines": {
     "node": ">=20"
