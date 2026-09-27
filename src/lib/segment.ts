@@ -27,15 +27,18 @@ export interface SpineBand {
   /**
    * 이 책등을 잘라 세운 캔버스를 만든다.
    * 90/-90 은 돌려 세운 글자(위→아래, 아래→위), 0 은 세로로 쌓은 글자용이다.
+   * invert 는 흑백을 뒤집어 짙은 바탕에 흰 글자인 책등을 읽을 때 쓴다.
    *
    * 부를 때 만든다. 책이 수십 권이면 미리 다 만들어 두는 것만으로 메모리가 바닥난다.
    */
-  crop(deg: number): SpineVariant;
+  crop(deg: number, invert?: boolean): SpineVariant;
 }
 
 export interface SpineVariant {
   /** 90, -90 은 돌려 세운 글자, 0 은 세로로 쌓인 글자용 */
   deg: number;
+  /** 흑백을 뒤집어 잘랐는지 (짙은 바탕에 흰 글자인 책등용) */
+  invert: boolean;
   canvas: HTMLCanvasElement;
 }
 
@@ -76,6 +79,7 @@ export interface SegmentOptions {
   maxUpscale?: number;
   /** 잘라낸 책등의 최대 길이(px). 가까이서 찍으면 책등이 사진 세로를 꽉 채운다. */
   maxCropLength?: number;
+
   /** 경계 점수 프로파일을 함께 돌려준다 (bench/segment.mjs 진단용) */
   debug?: boolean;
 }
@@ -868,7 +872,7 @@ function cropBand(
   const sw = Math.min(source.width - sx, Math.ceil(width + 2 * pad));
   const sh = Math.min(source.height - sy, Math.ceil(height));
 
-  const draw = (deg: number): SpineVariant => {
+  const draw = (deg: number, invert = false): SpineVariant => {
     const swap = deg % 180 !== 0;
     const canvas = document.createElement("canvas");
     canvas.width = Math.round((swap ? height : width) * scale);
@@ -883,8 +887,9 @@ function cropBand(
       ctx.transform(1, 0, -spec.slope, 1, 0, 0);
       ctx.translate(-centerX, -centerY);
       if (sw > 0 && sh > 0) ctx.drawImage(source, sx, sy, sw, sh, sx, sy, sw, sh);
+      if (invert) invertCanvas(canvas);
     }
-    return { deg, canvas };
+    return { deg, invert, canvas };
   };
 
   return {
@@ -892,6 +897,29 @@ function cropBand(
     x1: Math.round(spec.originalX1),
     crop: draw,
   };
+}
+
+/**
+ * 크롭의 흑백을 뒤집는다.
+ *
+ * OCR은 흰 바탕에 검은 글자를 가정하는데, 한국 아동서 책등은 짙은 바탕에 흰 글자가 흔하다.
+ * "네 기분은 어떤 색깔이니?"는 그냥 넣으면 한 글자도 못 읽다가, 뒤집으니
+ * "내기분은어떤색깔"로 읽혔다. 어느 쪽이 맞는지는 미리 알 수 없어서 둘 다 읽고
+ * 점수로 고른다 (ocr.ts). 밝기만 보고 미리 정하면 합성 사진에서 오히려 나빠졌다.
+ */
+function invertCanvas(canvas: HTMLCanvasElement): void {
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx || canvas.width < 2 || canvas.height < 2) return;
+  const { width: w, height: h } = canvas;
+  const image = ctx.getImageData(0, 0, w, h);
+  const data = image.data;
+
+  for (let p = 0; p < w * h; p++) {
+    data[p * 4] = 255 - data[p * 4];
+    data[p * 4 + 1] = 255 - data[p * 4 + 1];
+    data[p * 4 + 2] = 255 - data[p * 4 + 2];
+  }
+  ctx.putImageData(image, 0, 0);
 }
 
 /**
@@ -928,9 +956,36 @@ function bandColor(
   return `#${hex(channel(samples[0]))}${hex(channel(samples[1]))}${hex(channel(samples[2]))}`;
 }
 
+/**
+ * 이미 한 권만 잘려 있는 이미지를 밴드 하나로 감싼다.
+ *
+ * 분할을 거치지 않고 인식만 따로 재 볼 때 쓴다. 분할이 범인인지 OCR이 범인인지
+ * 가르려면, 손으로 정확히 자른 책등을 같은 크롭 규칙으로 넣어 봐야 한다.
+ */
+export function singleSpine(source: HTMLCanvasElement, options: SegmentOptions = {}): SpineBand {
+  const opts = { ...DEFAULTS, ...options };
+  return {
+    ...cropBand(source, {
+      x0: 0,
+      x1: source.width,
+      top: 0,
+      bottom: source.height,
+      originalX0: 0,
+      originalX1: source.width,
+      targetWidth: opts.targetSpineWidth,
+      maxUpscale: opts.maxUpscale,
+      maxLength: opts.maxCropLength,
+      slope: 0,
+    }),
+    color: "#8a7f6d",
+    widthRatio: 1,
+    ink: 1,
+  };
+}
+
 /** 분할이 실패했을 때 쓸 전체 이미지 회전본 (정면 표지, 눕힌 책 대비) */
 export function wholeImageVariants(source: HTMLCanvasElement): SpineVariant[] {
-  return [0, 90, -90].map((deg) => {
+  return [0, 90, -90].map((deg): SpineVariant => {
     const swap = deg % 180 !== 0;
     const canvas = document.createElement("canvas");
     canvas.width = swap ? source.height : source.width;
@@ -941,6 +996,6 @@ export function wholeImageVariants(source: HTMLCanvasElement): SpineVariant[] {
       ctx.rotate((deg * Math.PI) / 180);
       ctx.drawImage(source, -source.width / 2, -source.height / 2);
     }
-    return { deg, canvas };
+    return { deg, invert: false, canvas };
   });
 }

@@ -2,6 +2,7 @@ import { PSM, createWorker, type Worker } from "tesseract.js";
 import {
   releaseVariants,
   segmentSpines,
+  singleSpine,
   type SpineBand,
   wholeImageVariants,
   type SegmentOptions,
@@ -220,14 +221,21 @@ export async function readShelf(
     if (signal?.aborted) break;
     onProgress?.({ phase: "책등 읽는 중", done: index, total: bands.length });
 
-    const wanted = verticalWorker ? [90, -90, 0] : [90, -90];
-    const first = settled !== null && verticalMode !== "always" ? [settled] : wanted;
-    let candidates = await readDirections(worker, verticalWorker, band, first);
+    // 흑백을 뒤집어도 같이 읽어 보면 짙은 바탕에 흰 글자인 책등이 살아난다. 다만 전체로
+    // 재 보면 실제 사진 12/40 이 그대로고 시간만 두 배가 됐다. 그래서 기본으로는 켜지 않는다.
+    // 한 권씩 확인할 때는 bench/spine.mjs 가 양쪽을 다 읽어 보여 준다.
+    const degrees = verticalWorker ? [90, -90, 0] : [90, -90];
+    const wanted: Shot[] = degrees.map((deg) => ({ deg, invert: false }));
+    const first =
+      settled !== null && verticalMode !== "always"
+        ? wanted.filter((shot) => shot.deg === settled)
+        : wanted;
+    let candidates = await readShots(worker, verticalWorker, band, first);
 
-    // 정한 방향으로 잘 안 읽히면 거꾸로 꽂혔거나 글자가 쌓인 책이다. 나머지 방향도 본다.
+    // 정한 방향으로 잘 안 읽히면 거꾸로 꽂혔거나 글자가 쌓인 책이다. 나머지도 본다.
     if ((candidates[0]?.score ?? 0) < VERTICAL_RETRY_SCORE && first.length < wanted.length) {
-      const rest = wanted.filter((deg) => !first.includes(deg));
-      candidates = [...candidates, ...(await readDirections(worker, verticalWorker, band, rest))];
+      const rest = wanted.filter((shot) => shot.deg !== settled);
+      candidates = [...candidates, ...(await readShots(worker, verticalWorker, band, rest))];
       candidates.sort((a, b) => b.score - a.score);
     }
 
@@ -258,25 +266,33 @@ export async function readShelf(
   return { readings, tiltDeg, usedFallback: false };
 }
 
+/** 읽어 볼 한 가지 방법: 방향 + 흑백 반전 여부 */
+interface Shot {
+  deg: number;
+  invert: boolean;
+}
+
 interface Candidate {
   /** 어느 방향으로 읽었는지 (90/-90 은 돌려 세운 글자, 0 은 쌓인 글자) */
   deg: number;
+  /** 흑백을 뒤집어 읽었는지 */
+  invert: boolean;
   text: string;
   /** 다듬기 전 OCR 원문 */
   raw: string;
   score: number;
 }
 
-/** 한 책등을 주어진 방향들로 읽는다. 크롭은 읽자마자 버린다. */
-async function readDirections(
+/** 한 책등을 주어진 방법들로 읽는다. 크롭은 읽자마자 버린다. */
+async function readShots(
   worker: Worker,
   verticalWorker: Worker | null,
   band: SpineBand,
-  degrees: number[],
+  shots: Shot[],
 ): Promise<Candidate[]> {
   const results = await Promise.all(
-    degrees.map(async (deg) => {
-      const variant = band.crop(deg);
+    shots.map(async ({ deg, invert }) => {
+      const variant = band.crop(deg, invert);
       const engine = deg === 0 && verticalWorker ? verticalWorker : worker;
       try {
         return await readVariant(engine, variant, deg === 0);
@@ -304,7 +320,7 @@ async function readVariant(
   variant: SpineVariant,
   stacked = false,
 ): Promise<Candidate> {
-  const deg = variant.deg;
+  const { deg, invert } = variant;
   const { data } = await worker.recognize(variant.canvas, {}, { blocks: true, text: true });
   // 크롭은 책등 모양 그대로 가늘고 길다. 짧은 쪽이 곧 책등을 가로지르는 방향이다.
   const across = variant.canvas.width >= variant.canvas.height ? "y" : "x";
@@ -316,7 +332,7 @@ async function readVariant(
   const cleaned = cleanText(trimmed);
   const text = stacked ? cleaned.replace(/\s+/g, "") : cleaned;
   // 점수도 제목 글자만 보고 낸다. 잔글씨를 길게 오독한 쪽이 이기면 방향까지 틀린다.
-  return { deg, text, raw, score: scoreWords(title) };
+  return { deg, invert, text, raw, score: scoreWords(title) };
 }
 
 /**
@@ -543,4 +559,31 @@ function dedupe(readings: SpineReading[]): SpineReading[] {
     seen.add(key);
     return true;
   });
+}
+
+/**
+ * 이미 한 권만 잘려 있는 이미지를 읽는다 (bench/spine.mjs 진단용).
+ * 세 방향을 모두 읽어 점수 순으로 돌려준다. 분할을 거치지 않으므로,
+ * 분할이 범인인지 OCR이 범인인지 가를 때 쓴다.
+ */
+export async function readSpineImage(
+  image: HTMLCanvasElement,
+  langs = "kor+eng",
+  segment: SegmentOptions = {},
+): Promise<{ deg: number; invert: boolean; text: string; raw: string; score: number }[]> {
+  const worker = await getWorker(langs);
+  const vertical = langs.includes("kor") ? await getVerticalWorker() : null;
+  const band = singleSpine(image, segment);
+
+  const results: Candidate[] = [];
+  for (const deg of [90, -90, 0]) {
+    if (deg === 0 && !vertical) continue;
+    const variant = band.crop(deg);
+    try {
+      results.push(await readVariant(deg === 0 && vertical ? vertical : worker, variant, deg === 0));
+    } finally {
+      releaseVariants([variant]);
+    }
+  }
+  return results.sort((a, b) => b.score - a.score);
 }

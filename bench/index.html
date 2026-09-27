@@ -39,6 +39,13 @@
         });
       };
 
+      // 이미 한 권만 잘라 둔 이미지를 분할 없이 읽는다 (bench/spine.mjs).
+      window.__spine = async (dataUrl, langs, segment) => {
+        const { readSpineImage } = await import("/src/lib/ocr.ts");
+        const blob = await (await fetch(dataUrl)).blob();
+        return readSpineImage(await toWorkingCanvas(blob), langs, segment ?? {});
+      };
+
       // Playwright가 호출한다. 이미지를 넣으면 인식 결과를 돌려준다.
       window.__bench = async (dataUrl, options) => {
         const blob = await (await fetch(dataUrl)).blob();
