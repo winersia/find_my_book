@@ -6,7 +6,7 @@ import {
   type SpineBand,
   type SpineVariant,
 } from "./segment";
-import { hasModels, loadModels, readLine, releaseModels } from "./ppocr";
+import { hasModels, loadModels, readLine, releaseModels, watchModels } from "./ppocr";
 
 /** 책등 한 권을 읽은 결과 */
 export interface SpineReading {
@@ -27,6 +27,13 @@ export interface SpineReading {
 }
 
 export interface ScanProgress {
+  /**
+   * 어느 구간인지. 화면이 진행률을 어떻게 그릴지 여기서 갈린다.
+   *  - model: 인식 모델 내려받기. 바이트로 재므로 퍼센트를 보여 준다.
+   *  - spine: 책등 찾기. 순간이라 셀 것이 없다.
+   *  - read: 한 권씩 읽기. 남은 권수로 남은 시간을 어림잡는다.
+   */
+  kind: "model" | "spine" | "read";
   phase: string;
   done: number;
   total: number;
@@ -70,10 +77,21 @@ export async function readShelf(
   image: HTMLCanvasElement,
   { onProgress, signal, segment }: ReadShelfOptions,
 ): Promise<ShelfResult> {
-  await loadModels((ratio) =>
-    onProgress?.({ phase: "글자 인식 모델 준비 중", done: ratio, total: 1 }),
+  // 앱 진입 때 이미 받기 시작했으면 그 진행률이 그대로 흘러든다 (src/lib/warmup.ts).
+  const unwatch = watchModels((progress) =>
+    onProgress?.({
+      kind: "model",
+      phase: "글자 인식 준비 중",
+      done: progress.opening ? progress.total : progress.loaded,
+      total: progress.total,
+    }),
   );
-  onProgress?.({ phase: "책등 찾는 중", done: 0, total: 1 });
+  try {
+    await loadModels();
+  } finally {
+    unwatch();
+  }
+  onProgress?.({ kind: "spine", phase: "책등 찾는 중", done: 0, total: 1 });
 
   const { bands, tiltDeg } = segmentSpines(image, segment);
   const usedFallback = bands.length < 2;
@@ -96,7 +114,7 @@ export async function readShelf(
 
   for (const [index, band] of bands.entries()) {
     if (signal?.aborted) break;
-    onProgress?.({ phase: "책등 읽는 중", done: index, total: bands.length });
+    onProgress?.({ kind: "read", phase: "책등 읽는 중", done: index, total: bands.length });
 
     // 흑백 반전도 같이 읽어 보면 짙은 바탕에 흰 글자인 책등이 살아나지만, 전체로 재 보면
     // 합계가 그대로고 시간만 두 배가 됐다. 그래서 기본으로는 켜지 않는다 (crop API 에는 남아 있다).
@@ -134,7 +152,7 @@ export async function readShelf(
     });
   }
 
-  onProgress?.({ phase: "책등 읽는 중", done: bands.length, total: bands.length });
+  onProgress?.({ kind: "read", phase: "책등 읽는 중", done: bands.length, total: bands.length });
   return { readings, tiltDeg, usedFallback: false };
 }
 
@@ -196,7 +214,7 @@ async function readWholeImage(
 
   for (const [index, deg] of [0, 90, -90].entries()) {
     if (signal?.aborted) break;
-    onProgress?.({ phase: "사진 전체를 읽는 중", done: index, total: 3 });
+    onProgress?.({ kind: "read", phase: "사진 전체를 읽는 중", done: index, total: 3 });
     const variant = band.crop(deg);
     try {
       const candidate = await readVariant(variant);
@@ -216,7 +234,7 @@ async function readWholeImage(
     }
   }
 
-  onProgress?.({ phase: "사진 전체를 읽는 중", done: 3, total: 3 });
+  onProgress?.({ kind: "read", phase: "사진 전체를 읽는 중", done: 3, total: 3 });
   return dedupe(readings);
 }
 

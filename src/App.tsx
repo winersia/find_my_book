@@ -3,6 +3,7 @@ import { BookcaseSetup } from "./components/BookcaseSetup";
 import { BookcaseView } from "./components/BookcaseView";
 import { ScanSheet } from "./components/ScanSheet";
 import { SlotPanel } from "./components/SlotPanel";
+import { WarmupStrip } from "./components/WarmupStrip";
 import {
   DEFAULT_COLUMNS,
   DEFAULT_ROWS,
@@ -25,6 +26,7 @@ import {
   type Bookcase,
   type ShelfBook,
 } from "./lib/bookcase";
+import { warmUpWhenIdle } from "./lib/warmup";
 
 const SETTINGS_KEY = "find-my-book:settings:v1";
 
@@ -58,6 +60,9 @@ export default function App() {
     } catch {
       // 설정을 못 읽어도 기본값으로 동작한다.
     }
+    // 셔터를 누른 뒤에 17MB를 받기 시작하면 사용자는 멈춘 화면을 본다.
+    // 첫 화면을 그린 뒤 뒤에서 받아 둔다 (src/lib/warmup.ts).
+    warmUpWhenIdle();
   }, []);
 
   useEffect(() => {
@@ -177,6 +182,7 @@ export default function App() {
     return (
       <div className="app">
         <Header title="책장 스캐너" />
+        <WarmupStrip />
         <main>
           <BookcaseSetup
             existing={editing}
@@ -222,6 +228,7 @@ export default function App() {
           </select>
         )}
       </Header>
+      <WarmupStrip />
 
       <main>
         <BookcaseView

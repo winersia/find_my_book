@@ -2,8 +2,9 @@ import { useCallback, useRef, useState } from "react";
 import { appendBatch, booksFromReadings, LOW_CONFIDENCE, type ShelfBook } from "../lib/bookcase";
 import { enrichBooks } from "../lib/enrich";
 import { maxBooksPerShot, TARGET_SPINE_PX, toThumbnail } from "../lib/image";
-import { hasOcrModel, readShelf, type ScanProgress } from "../lib/ocr";
+import { readShelf, type ScanProgress } from "../lib/ocr";
 import { CameraCapture } from "./CameraCapture";
+import { modelLabel, WARMUP_REASON } from "./WarmupStrip";
 
 interface Props {
   label: string;
@@ -38,8 +39,6 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
   const [shotCapacity, setShotCapacity] = useState(0);
 
   const abort = useRef<AbortController | null>(null);
-
-  const firstRun = !hasOcrModel();
 
   const scan = useCallback(
     async (canvas: HTMLCanvasElement) => {
@@ -104,16 +103,11 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
 
       {stage === "capture" && (
         <>
-          {appending ? (
+          {/* 첫 실행 안내는 앱을 열 때 띠가 이미 했다 (WarmupStrip). 여기서 또 말하지 않는다. */}
+          {appending && (
             <p className="notice" data-testid="append-notice">
               {shots + 1}번째 사진 — 방금 찍은 곳 다음부터, 한두 권만 겹치게 찍어 주세요.
             </p>
-          ) : (
-            firstRun && (
-              <p className="notice" data-testid="first-run-notice">
-                처음 한 번만 인식 모델 16MB를 받아요. 사진은 기기 밖으로 나가지 않습니다.
-              </p>
-            )
           )}
           <CameraCapture onCapture={scan} disabled={false} remaining={1} autoStart />
           {error && <p className="error">{error}</p>}
@@ -228,28 +222,59 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
   );
 }
 
-/** 오래 걸리는 구간. 어디까지 왔는지, 얼마나 남았는지, 멈출 수 있는지를 보여 준다. */
+/**
+ * 오래 걸리는 구간. 어디까지 왔는지, 얼마나 남았는지, 멈출 수 있는지를 보여 준다.
+ *
+ * 구간마다 잴 수 있는 것이 다르다. 모델 내려받기는 바이트로, 책등 읽기는 권수로 잰다.
+ * 둘 다 숫자가 움직이는 막대를 보여 준다. 잴 것이 없는 구간만 흐르는 막대다.
+ * 멈춘 것처럼 보이는 화면에서 사람이 나간다.
+ */
 function Scanning({ progress, onCancel }: { progress: ScanProgress | null; onCancel: () => void }) {
-  const preparing = !progress || progress.total <= 1;
-  const ratio = progress && progress.total > 0 ? progress.done / progress.total : 0;
-  const percent = Math.round(Math.min(1, ratio) * 100);
-  const remaining =
-    progress && progress.total > 1 ? Math.max(1, Math.round((progress.total - progress.done) * SECONDS_PER_BOOK)) : 0;
+  const stop = (
+    <div className="scan-actions">
+      <button type="button" onClick={onCancel} data-testid="cancel-scan">
+        그만두기
+      </button>
+    </div>
+  );
+
+  // 앱을 열 때 미리 받아 두므로 여기까지 오는 일은 드물다. 데이터 절약 모드이거나
+  // 첫 화면을 금방 지나쳤을 때만 온다. 그때도 숫자는 보여야 한다.
+  if (progress?.kind === "model") {
+    const percent = Math.round(Math.min(1, progress.done / progress.total) * 100);
+    return (
+      <div className="progress" role="status" data-testid="scanning">
+        <p className="progress-line">
+          <strong data-testid="scan-model-label">
+            {modelLabel(progress.done, progress.total, percent >= 100)}
+          </strong>
+          <span className="remaining">{percent}%</span>
+        </p>
+        <div className="bar">
+          <span style={{ width: `${percent}%` }} />
+        </div>
+        <p className="notice">{WARMUP_REASON}</p>
+        {stop}
+      </div>
+    );
+  }
+
+  const counting = progress?.kind === "read" && progress.total > 1;
+  const percent = counting ? Math.round(Math.min(1, progress.done / progress.total) * 100) : 0;
+  const remaining = counting
+    ? Math.max(1, Math.round((progress.total - progress.done) * SECONDS_PER_BOOK))
+    : 0;
 
   return (
     <div className="progress" role="status" data-testid="scanning">
       <p className="progress-line">
-        <strong>{preparing ? "읽을 준비를 하고 있어요" : `책등을 읽는 중 ${progress.done}/${progress.total}`}</strong>
+        <strong>{counting ? `책등을 읽는 중 ${progress.done}/${progress.total}` : "책등을 찾는 중"}</strong>
         {remaining > 0 && <span className="remaining">약 {remaining}초 남음</span>}
       </p>
       <div className="bar">
-        <span className={preparing ? "indeterminate" : ""} style={{ width: preparing ? "100%" : `${percent}%` }} />
+        <span className={counting ? "" : "indeterminate"} style={{ width: counting ? `${percent}%` : "100%" }} />
       </div>
-      <div className="scan-actions">
-        <button type="button" onClick={onCancel} data-testid="cancel-scan">
-          그만두기
-        </button>
-      </div>
+      {stop}
     </div>
   );
 }

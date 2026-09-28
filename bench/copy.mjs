@@ -23,6 +23,8 @@ const SELECTOR = [
   ".steps",
   ".preview-caption",
   ".frame-guide span",
+  // 첫 실행 준비 띠도 읽어야 아는 글이다. 세지 않으면 슬쩍 늘어난다.
+  ".warmup-line strong",
 ].join(", ");
 
 const browser = await chromium.launch({

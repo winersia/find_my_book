@@ -28,6 +28,18 @@ export interface SpineText {
   confidence: number;
 }
 
+/** 모델을 받는 중임을 알리는 값 */
+export interface ModelProgress {
+  /** 0~1 */
+  ratio: number;
+  /** 받은 바이트 */
+  loaded: number;
+  /** 받아야 할 바이트 */
+  total: number;
+  /** 다 받고 세션을 여는 중인지 (여기서는 진행률이 멈춰 보인다) */
+  opening: boolean;
+}
+
 /** 인식 모델이 기대하는 글자 띠 높이 */
 const LINE_HEIGHT = 48;
 /** 글자 확률이 이보다 높으면 글자로 본다 */
@@ -37,10 +49,41 @@ const TITLE_HEIGHT_RATIO = 0.7;
 /** 모델을 받는 데 이만큼 걸리면 실패로 본다 */
 const MODEL_TIMEOUT_MS = 120_000;
 
+/**
+ * 받아야 할 바이트 수. scripts/fetch-ppocr.mjs 가 실제 파일과 맞는지 확인하고
+ * 틀리면 멈춘다. 서버가 gzip 으로 보내면 content-length 는 압축된 크기라
+ * 진행률 분모로 쓸 수 없다 (풀린 바이트가 더 많아 100% 를 넘는다).
+ * 우리가 배포하는 파일이라 크기를 알고 있으니 그것을 쓴다.
+ */
+export const MODEL_BYTES = { rec: 13_418_787, det: 4_826_518 } as const;
+const TOTAL_BYTES = MODEL_BYTES.rec + MODEL_BYTES.det;
+
 let rec: Ort.InferenceSession | null = null;
 let det: Ort.InferenceSession | null = null;
 let dict: string[] | null = null;
 let loading: Promise<void> | null = null;
+let latest: ModelProgress | null = null;
+
+/**
+ * 진행률은 loadModels 의 인자가 아니라 여기로 내보낸다.
+ *
+ * 앱 진입과 셔터 두 곳에서 같은 내려받기를 기다린다. 두 번째 호출은 앞선 약속을
+ * 그대로 받아 돌아가므로, 인자로 받은 콜백은 불릴 자리가 없다. 화면 두 곳이
+ * 모두 같은 진행률을 보려면 내려받기 쪽이 알려 주는 편이 맞다.
+ */
+const watchers = new Set<(progress: ModelProgress) => void>();
+
+/** 진행률을 받아 본다. 이미 받는 중이면 최근 값을 바로 한 번 준다. */
+export function watchModels(fn: (progress: ModelProgress) => void): () => void {
+  watchers.add(fn);
+  if (latest) fn(latest);
+  return () => watchers.delete(fn);
+}
+
+function report(loaded: number, opening = false): void {
+  latest = { ratio: Math.min(1, loaded / TOTAL_BYTES), loaded, total: TOTAL_BYTES, opening };
+  for (const watcher of watchers) watcher(latest);
+}
 
 function assetBase(): string {
   const base = import.meta.env.BASE_URL || "/";
@@ -59,17 +102,17 @@ export async function releaseModels(): Promise<void> {
   det = null;
   dict = null;
   loading = null;
+  latest = null;
 }
 
-/** 내려받는 동안 진행률을 알려 준다. 17MB라 한참 걸린다. */
+/** 내려받는 동안 받은 바이트를 알려 준다. 17MB라 한참 걸린다. */
 async function fetchWithProgress(
   url: string,
-  onProgress?: (ratio: number) => void,
+  onBytes: (received: number) => void,
 ): Promise<ArrayBuffer> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`${url} (${response.status})`);
-  const total = Number(response.headers.get("content-length") ?? 0);
-  if (!response.body || !total) return response.arrayBuffer();
+  if (!response.body) return response.arrayBuffer();
 
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -79,7 +122,7 @@ async function fetchWithProgress(
     if (done) break;
     chunks.push(value);
     received += value.length;
-    onProgress?.(received / total);
+    onBytes(received);
   }
   const out = new Uint8Array(received);
   let offset = 0;
@@ -90,10 +133,11 @@ async function fetchWithProgress(
   return out.buffer;
 }
 
-export async function loadModels(onProgress?: (ratio: number) => void): Promise<void> {
+export async function loadModels(): Promise<void> {
   if (hasModels()) return;
   if (loading) return loading;
 
+  report(0);
   loading = (async () => {
     const base = assetBase();
     const runtime = `${base}ort/ort.wasm.bundle.min.mjs`;
@@ -102,23 +146,29 @@ export async function loadModels(onProgress?: (ratio: number) => void): Promise<
     ort.env.wasm.wasmPaths = `${base}ort/`;
     ort.env.wasm.numThreads = 1;
 
-    // 인식 모델이 12.8MB로 훨씬 크다. 진행률은 두 개를 합쳐 셈한다.
-    const recBytes = await fetchWithProgress(`${base}ppocr/rec.onnx`, (r) => onProgress?.(r * 0.75));
-    const detBytes = await fetchWithProgress(`${base}ppocr/det.onnx`, (r) => onProgress?.(0.75 + r * 0.2));
+    // 인식 모델이 12.8MB로 훨씬 크다. 진행률은 두 개를 합쳐 바이트로 센다.
+    const recBytes = await fetchWithProgress(`${base}ppocr/rec.onnx`, (bytes) => report(bytes));
+    const detBytes = await fetchWithProgress(`${base}ppocr/det.onnx`, (bytes) =>
+      report(MODEL_BYTES.rec + bytes),
+    );
     const text = await (await fetch(`${base}ppocr/korean_dict.txt`)).text();
-    onProgress?.(0.96);
+    // 여기서부터는 수치로 잴 것이 없다. 다 받았다고 알리고 여는 중임을 따로 표시한다.
+    report(TOTAL_BYTES, true);
 
     rec = await ort.InferenceSession.create(recBytes, { executionProviders: ["wasm"] });
     det = await ort.InferenceSession.create(detBytes, { executionProviders: ["wasm"] });
     // CTC: 0번은 빈 칸, 끝에 공백 하나를 덧붙이는 것이 PaddleOCR 관례다.
     dict = ["", ...text.split("\n"), " "];
-    onProgress?.(1);
+    report(TOTAL_BYTES);
+    // 끝난 뒤 새로 붙는 감시자에게 옛 진행률을 되돌려 줄 일은 없다.
+    latest = null;
   })();
 
   try {
     await withTimeout(loading, MODEL_TIMEOUT_MS);
   } catch (error) {
     loading = null;
+    latest = null;
     rec = null;
     det = null;
     throw error;

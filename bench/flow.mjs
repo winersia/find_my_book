@@ -392,6 +392,97 @@ check("앱을 다시 열어도 책장과 칸이 그대로다", JSON.stringify(be
 await page.click('[data-slot="0"]');
 await page.screenshot({ path: path.join(CACHE, "flow-bookcase.png"), fullPage: true });
 
+// 13~15. 처음 들어왔을 때의 화면 반응
+//
+// 이 앱은 첫 실행에 인식 모델 17MB를 받는다. 미리보기 서버에서는 순식간이라
+// 그냥 보면 아무것도 확인할 수 없다. 그래서 크로미움의 망 속도를 낮춰
+// 실제 휴대폰에서 겪는 몇 초를 만들어 놓고 본다. 새 컨텍스트라 처음 방문과 같다.
+{
+  const first = await browser.newContext({ viewport: { width: 420, height: 900 } });
+  const probe = await first.newPage();
+  const cdp = await first.newCDPSession(probe);
+  await cdp.send("Network.enable");
+  await cdp.send("Network.emulateNetworkConditions", {
+    offline: false,
+    latency: 20,
+    // 2MB/s. 17MB 모델이 10초 남짓 걸려, 그 사이 화면을 눌러 볼 수 있다.
+    downloadThroughput: 2 * 1024 * 1024,
+    uploadThroughput: 1024 * 1024,
+  });
+
+  const openedAt = Date.now();
+  await probe.goto(APP_URL, { waitUntil: "domcontentloaded" });
+  await probe.waitForSelector('[data-testid="setup-preview"] .slot');
+  const paintedMs = Date.now() - openedAt;
+
+  // 첫 화면이 모델을 기다리지 않고 먼저 그려진다.
+  check("모델을 받는 동안에도 첫 화면이 곧바로 그려진다", paintedMs < 4000, `${paintedMs}ms`);
+
+  // 내려받는 동안 진행률이 숫자로 보이고, 그 숫자가 움직인다.
+  await probe.waitForSelector('[data-testid="warmup-percent"]', { timeout: 15000 });
+  const readPercent = () =>
+    probe.$eval('[data-testid="warmup-percent"]', (el) => Number(el.textContent.replace("%", "")));
+  const firstPercent = await readPercent();
+  const label = await probe.$eval('[data-testid="warmup-label"]', (el) =>
+    el.textContent.replace(/\s+/g, " ").trim(),
+  );
+  await probe.waitForFunction(
+    (before) => {
+      const el = document.querySelector('[data-testid="warmup-percent"]');
+      return el && Number(el.textContent.replace("%", "")) > before;
+    },
+    firstPercent,
+    { timeout: 20000 },
+  );
+  const movedPercent = await readPercent();
+  check(
+    "받는 동안 진행률이 숫자로 보이고 움직인다",
+    /[\d.]+\s*\/\s*[\d.]+MB/.test(label) && movedPercent > firstPercent,
+    `${label} · ${firstPercent}% → ${movedPercent}%`,
+  );
+  await probe.screenshot({ path: path.join(CACHE, "flow-first-run.png"), fullPage: true });
+
+  // 진행 중에도 아무것도 막히지 않는다. 책장을 만들어 보고 확인한다.
+  await probe.fill('input[aria-label="책장 이름"]', "받는 중에 만든 책장");
+  await probe.click("text=이 책장 만들기");
+  await probe.waitForSelector('[data-testid="bookcase"]', { timeout: 5000 });
+  const stillLoading = await probe.$('[data-testid="warmup-percent"]');
+  await probe.click('[data-slot="0"]');
+  const panelOpen = await probe.$('[data-testid="slot-panel"]');
+  check(
+    "받는 동안에도 책장을 만들고 칸을 고를 수 있다",
+    Boolean(panelOpen) && Boolean(stillLoading),
+    stillLoading ? "아직 받는 중인데도 진행됨" : "이미 다 받아서 막힘 여부를 못 봄",
+  );
+
+  // 다 받으면 준비 끝을 잠깐 알리고 스스로 사라진다. 계속 남아 자리를 차지하지 않는다.
+  let sawDone = false;
+  const doneWatch = probe
+    .waitForFunction(
+      () => document.querySelector('[data-testid="warmup"]')?.classList.contains("done"),
+      undefined,
+      { timeout: 90000 },
+    )
+    .then(() => {
+      sawDone = true;
+    })
+    .catch(() => {});
+  let vanished = true;
+  try {
+    await probe.waitForSelector('[data-testid="warmup"]', { state: "detached", timeout: 90000 });
+  } catch {
+    vanished = false;
+  }
+  await doneWatch;
+  check(
+    "준비가 끝나면 진행 표시가 스스로 사라진다",
+    vanished,
+    sawDone ? "준비 끝을 알린 뒤 사라짐" : "사라졌지만 준비 끝 알림은 놓침",
+  );
+
+  await first.close();
+}
+
 console.log(`\n=== ${results.filter((r) => r.ok).length}/${results.length} 통과 ===`);
 for (const failure of results.filter((r) => !r.ok)) console.log(`  실패: ${failure.name} (${failure.detail})`);
 await browser.close();
