@@ -13,11 +13,13 @@
       ort.env.wasm.numThreads = 1;
 
       let session = null;
+      let detSession = null;
       let dict = null;
 
       async function load() {
         if (session) return;
         session = await ort.InferenceSession.create("./rec.onnx", { executionProviders: ["wasm"] });
+        detSession = await ort.InferenceSession.create("./det.onnx", { executionProviders: ["wasm"] });
         const text = await (await fetch("./korean_dict.txt")).text();
         // CTC: 0번은 blank, 끝에 공백 하나를 덧붙이는 것이 PaddleOCR 관례다.
         dict = ["<blank>", ...text.split("\n"), " "];
@@ -75,6 +77,87 @@
         return ctcDecode(output.data, steps, classes);
       }
 
+      /**
+       * 책등 띠에서 제목 글자가 있는 구간만 남긴다.
+       *
+       * 책등에는 제목 말고도 출판사·시리즈 번호·분류가 잔글씨로 찍혀 있고, 그것도 한글이라
+       * 글자만 보고는 못 가른다. 제목은 늘 띠의 폭을 가장 많이 차지하므로 글자 크기로 갈라야 한다.
+       * 화소 밝기만으로 재 봤더니 무늬와 글자를 구별하지 못해 오히려 나빠졌다(17→11권).
+       * 그래서 검출 모델에게 "여기가 글자다"를 물어보고, 그 지도 위에서 크기를 잰다.
+       */
+      async function titleSpan(canvas) {
+        await load();
+        const H0 = 48; // 검출도 인식과 같은 높이로 맞춘다
+        const W0 = Math.max(32, Math.min(2048, Math.round((canvas.width / canvas.height) * H0)));
+        const W = Math.ceil(W0 / 32) * 32;
+        const H = Math.ceil(H0 / 32) * 32;
+
+        const small = document.createElement("canvas");
+        small.width = W; small.height = H;
+        const sctx = small.getContext("2d", { willReadFrequently: true });
+        sctx.fillStyle = "#fff"; sctx.fillRect(0, 0, W, H);
+        sctx.imageSmoothingQuality = "high";
+        sctx.drawImage(canvas, 0, 0, W0, H0);
+        const px = sctx.getImageData(0, 0, W, H).data;
+
+        const mean = [0.485, 0.456, 0.406];
+        const std = [0.229, 0.224, 0.225];
+        const data = new Float32Array(3 * H * W);
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const i = (y * W + x) * 4;
+            for (let c = 0; c < 3; c++) {
+              data[c * H * W + y * W + x] = (px[i + c] / 255 - mean[c]) / std[c];
+            }
+          }
+        }
+        const result = await detSession.run({
+          [detSession.inputNames[0]]: new ort.Tensor("float32", data, [1, 3, H, W]),
+        });
+        const map = result[detSession.outputNames[0]].data;
+
+        // 길이 방향으로 훑으며 글자 확률이 띠의 위아래로 얼마나 퍼져 있는지 잰다.
+        const extent = new Int32Array(W0);
+        for (let x = 0; x < W0; x++) {
+          let top = -1, bottom = -1;
+          for (let y = 0; y < H0; y++) {
+            if (map[y * W + x] > 0.3) { if (top < 0) top = y; bottom = y; }
+          }
+          extent[x] = top < 0 ? 0 : bottom - top + 1;
+        }
+
+        const gap = Math.max(6, Math.round(H0 * 1.5));
+        const spans = [];
+        let from = -1, empty = 0;
+        for (let x = 0; x <= W0; x++) {
+          const on = x < W0 && extent[x] > 0;
+          if (on) { if (from < 0) from = x; empty = 0; }
+          else if (from >= 0 && ++empty > gap) { spans.push([from, x - empty]); from = -1; }
+        }
+        if (from >= 0) spans.push([from, W0 - 1]);
+        if (!spans.length) return null;
+
+        const height = ([a, b]) => {
+          const list = [];
+          for (let x = a; x <= b; x++) if (extent[x] > 0) list.push(extent[x]);
+          list.sort((p, q) => p - q);
+          return list[Math.floor(list.length * 0.7)] ?? 0;
+        };
+        const tallest = Math.max(...spans.map(height));
+        const keep = spans.filter((s) => height(s) >= tallest * 0.7);
+        if (!keep.length) return null;
+
+        const scale = canvas.width / W0;
+        const a = Math.max(0, Math.round(keep[0][0] * scale) - 6);
+        const b = Math.min(canvas.width - 1, Math.round(keep[keep.length - 1][1] * scale) + 6);
+        if (b - a < canvas.height) return null;
+
+        const out = document.createElement("canvas");
+        out.width = b - a + 1; out.height = canvas.height;
+        out.getContext("2d").drawImage(canvas, a, 0, out.width, canvas.height, 0, 0, out.width, canvas.height);
+        return out;
+      }
+
       /** 이미지를 네 방향(가로 두 방향 × 흑백 둘)으로 읽어 본다. */
       window.__ppocr = async (dataUrl) => {
         const img = new Image();
@@ -90,7 +173,8 @@
           ctx.translate(cv.width / 2, cv.height / 2);
           ctx.rotate((deg * Math.PI) / 180);
           ctx.drawImage(img, -img.width / 2, -img.height / 2);
-          const r = await recognize(cv);
+          const trimmed = window.__titleOnly ? ((await titleSpan(cv)) ?? cv) : cv;
+          const r = await recognize(trimmed);
           out.push({ deg, ...r });
         }
         return out.sort((a, b) => b.confidence - a.confidence);

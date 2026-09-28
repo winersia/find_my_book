@@ -5,7 +5,7 @@
  * 정답 제목과 비교해 몇 권을 맞혔는지 센다.
  *
  *   npm run dev            # 다른 터미널에서
- *   node bench/run.mjs [--case ko-rotated] [--langs kor+eng]
+ *   node bench/run.mjs [--case ko-rotated]
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -21,8 +21,6 @@ const FONT_URL =
 
 const args = process.argv.slice(2);
 const only = valueOf("--case");
-const langsOverride = valueOf("--langs");
-const verticalMode = valueOf("--vertical");
 const spineWidth = valueOf("--spine-width");
 const segmentOverride = valueOf("--segment");
 /** 렌더 배율. 올리면 합성 사진 자체가 더 촘촘해져 책등에 실리는 화소가 는다. */
@@ -178,10 +176,9 @@ for (const testCase of CASES) {
 
   let dataUrl = `data:image/png;base64,${fs.readFileSync(shot).toString("base64")}`;
   if (shrinkTo) dataUrl = await shrink(app, dataUrl, shrinkTo);
-  const langs = langsOverride ?? (testCase.korean ? "kor+eng" : "eng");
   const result = await app.evaluate(
     ([url, options]) => window.__bench(url, options),
-    [dataUrl, { langs, ...(verticalMode ? { verticalMode } : {}), segment: {
+    [dataUrl, { segment: {
         ...(spineWidth ? { targetSpineWidth: Number(spineWidth) } : {}),
         ...(segmentOverride ? JSON.parse(segmentOverride) : {}),
       } }],
@@ -200,7 +197,7 @@ for (const testCase of CASES) {
     ? found.reduce((sum, g) => sum + g.cer, 0) / found.length
     : 1;
 
-  console.log(`\n■ ${testCase.label} (${testCase.id}, ${langs}${verticalMode ? `, 세로=${verticalMode}` : ""})`);
+  console.log(`\n■ ${testCase.label} (${testCase.id})`);
   console.log(
     `  바로 맞은 것 ${hits}/${testCase.titles.length}, "다르게 읽기"까지 포함 ${reachable}/${testCase.titles.length} · ` +
       `${(result.elapsedMs / 1000).toFixed(0)}초 · 책등 ${spinePx}px · 인식 ${result.readings.length}건` +

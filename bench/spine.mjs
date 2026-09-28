@@ -9,7 +9,6 @@ import { chromium } from "playwright";
 const flagged = process.argv.slice(2);
 const at0 = flagged.indexOf("--segment");
 const files = flagged.filter((a, i) => !a.startsWith("--") && i !== at0 + 1);
-const langs = process.argv.includes("--eng") ? "eng" : "kor+eng";
 const at = process.argv.indexOf("--segment");
 const segment = at >= 0 ? JSON.parse(process.argv[at + 1]) : {};
 const browser = await chromium.launch({

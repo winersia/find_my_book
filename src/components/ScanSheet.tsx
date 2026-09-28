@@ -9,7 +9,6 @@ interface Props {
   label: string;
   /** 이 칸에 이미 꽂혀 있는 권수. 교체 전에 알려 주기 위해 쓴다. */
   existingCount: number;
-  langs: string;
   enrich: boolean;
   onApply: (books: ShelfBook[], photo: string) => void;
   onClose: () => void;
@@ -23,7 +22,7 @@ const SECONDS_PER_BOOK = 3;
 
 
 /** 칸 하나를 찍어 읽는 화면. 결과를 확인하고 고친 뒤 그 칸에 넣는다. */
-export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClose }: Props) {
+export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Props) {
   const [stage, setStage] = useState<Stage>("capture");
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [books, setBooks] = useState<ShelfBook[]>([]);
@@ -40,7 +39,7 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
 
   const abort = useRef<AbortController | null>(null);
 
-  const firstRun = !hasOcrModel(langs);
+  const firstRun = !hasOcrModel();
 
   const scan = useCallback(
     async (canvas: HTMLCanvasElement) => {
@@ -53,7 +52,6 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
 
       try {
         const result = await readShelf(canvas, {
-          langs,
           onProgress: setProgress,
           signal: controller.signal,
         });
@@ -81,7 +79,7 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
         setProgress(null);
       }
     },
-    [appending, enrich, langs],
+    [appending, enrich],
   );
 
   const cancel = useCallback(() => {
@@ -113,7 +111,7 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
           ) : (
             firstRun && (
               <p className="notice" data-testid="first-run-notice">
-                처음 한 번만 인식 데이터 4MB를 받아요. 사진은 기기 밖으로 나가지 않습니다.
+                처음 한 번만 인식 모델 16MB를 받아요. 사진은 기기 밖으로 나가지 않습니다.
               </p>
             )
           )}

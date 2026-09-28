@@ -29,7 +29,6 @@ import {
 const SETTINGS_KEY = "find-my-book:settings:v1";
 
 interface Settings {
-  langs: "kor+eng" | "eng";
   enrich: boolean;
 }
 
@@ -44,7 +43,7 @@ export default function App() {
   const [selected, setSelected] = useState<number | null>(null);
   const [scanning, setScanning] = useState(false);
   const [toast, setToast] = useState<{ message: string; undo?: () => void } | null>(null);
-  const [settings, setSettings] = useState<Settings>({ langs: "kor+eng", enrich: true });
+  const [settings, setSettings] = useState<Settings>({ enrich: true });
 
   useEffect(() => {
     const stored = loadBookcases();
@@ -306,16 +305,7 @@ export default function App() {
           </div>
 
           <div className="settings">
-            <label>
-              <span>인식 언어</span>
-              <select
-                value={settings.langs}
-                onChange={(event) => updateSettings({ langs: event.target.value as Settings["langs"] })}
-              >
-                <option value="kor+eng">한국어 + 영어</option>
-                <option value="eng">영어만 (빠름)</option>
-              </select>
-            </label>
+            {/* 인식 언어 고르기는 없앴다. 지금 모델 하나가 한글과 영문을 같이 읽는다. */}
             <label className="checkbox">
               <input
                 type="checkbox"
@@ -339,7 +329,6 @@ export default function App() {
           <ScanSheet
             label={slotLabel(current, selected)}
             existingCount={current.slots[selected].books.length}
-            langs={settings.langs}
             enrich={settings.enrich}
             onApply={applyScan}
             onClose={() => setScanning(false)}

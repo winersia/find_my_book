@@ -59,6 +59,7 @@ page.on("pageerror", (e) => console.error("페이지오류:", String(e).slice(0,
 page.on("response", (r) => { if (r.status() >= 400) console.error(`HTTP ${r.status()} ${r.url().slice(0, 120)}`); });
 await page.goto("http://localhost:8099/", { waitUntil: "networkidle" });
 await page.waitForFunction(() => window.__ppocrReady === true, { timeout: 30000 });
+if (process.argv.includes("--title")) await page.evaluate(() => { window.__titleOnly = true; });
 
 let index = 0;
 if (process.argv.includes("--list")) console.log(`${files.length}권 · PaddleOCR 한국어`);

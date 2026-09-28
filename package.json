@@ -5,13 +5,12 @@
   "description": "책장 사진을 찍으면 책등 글자를 읽어 책 목록을 만들어 주는 앱 (오픈소스 OCR)",
   "type": "module",
   "scripts": {
-    "predev": "node scripts/copy-tesseract-assets.mjs",
+    "predev": "node scripts/fetch-ppocr.mjs",
     "dev": "vite",
-    "prebuild": "node scripts/copy-tesseract-assets.mjs",
+    "prebuild": "node scripts/fetch-ppocr.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host",
     "typecheck": "tsc -b --pretty",
-    "fetch:langdata": "node scripts/fetch-langdata.mjs",
     "bench": "node bench/run.mjs",
     "bench:flow": "node bench/flow.mjs",
     "bench:read": "node bench/read.mjs",
@@ -23,7 +22,7 @@
   "dependencies": {
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "tesseract.js": "^7.0.0"
+    "onnxruntime-web": "^1.30.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.18",
@@ -31,8 +30,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "playwright": "^1.49.1",
     "typescript": "^5.7.3",
-    "vite": "^6.0.7",
-    "onnxruntime-web": "^1.30.0"
+    "vite": "^6.0.7"
   },
   "engines": {
     "node": ">=20"

@@ -1,13 +1,12 @@
-import { PSM, createWorker, type Worker } from "tesseract.js";
 import {
   releaseVariants,
   segmentSpines,
   singleSpine,
-  type SpineBand,
-  wholeImageVariants,
   type SegmentOptions,
+  type SpineBand,
   type SpineVariant,
 } from "./segment";
+import { hasModels, loadModels, readLine, releaseModels } from "./ppocr";
 
 /** 책등 한 권을 읽은 결과 */
 export interface SpineReading {
@@ -17,7 +16,7 @@ export interface SpineReading {
   text: string;
   /** 점수가 낮았던 다른 읽기들. 방향을 잘못 골랐을 때 사용자가 바꿔 끼울 수 있다. */
   alternatives: string[];
-  /** 다듬기 전 OCR 원문 */
+  /** 다듬기 전 인식 원문 */
   raw: string;
   /** 0~1 */
   confidence: number;
@@ -34,13 +33,6 @@ export interface ScanProgress {
 }
 
 export interface ReadShelfOptions {
-  /** "kor+eng" 또는 "eng" */
-  langs: string;
-  /**
-   * 세로로 쌓인 한글을 언제 읽을지.
-   * auto: 돌려 읽은 결과가 시원찮을 때만 (기본), always: 항상, off: 읽지 않음
-   */
-  verticalMode?: "auto" | "always" | "off";
   onProgress?: (progress: ScanProgress) => void;
   signal?: AbortSignal;
   /** 책등 분할 설정 (기본값으로 충분하다. 벤치에서 값을 바꿔 볼 때 쓴다.) */
@@ -54,158 +46,43 @@ export interface ShelfResult {
   usedFallback: boolean;
 }
 
-/** 세로로 쌓인 한글을 읽는 모델. 가로용 kor 모델로는 거의 못 읽는다. */
-const VERTICAL_LANG = "kor_vert";
-/**
- * 돌려 세운 두 방향이 이 점수에 못 미치면 세로로 쌓인 글자를 의심하고 한 번 더 읽는다.
- * 항상 읽으면 영문 책장에서 시간만 50% 더 든다.
- */
-const VERTICAL_RETRY_SCORE = 70;
 /**
  * 방향을 정하기 전에 세 방향을 다 읽어 볼 책 수.
  *
  * 한 칸에 꽂힌 책은 거의 다 같은 방향으로 제목이 쓰여 있다. 앞의 몇 권으로 방향을
- * 정하면 나머지는 한 번씩만 읽으면 된다. 40권짜리 칸에서 읽는 시간이 절반 아래로 준다.
- * 정한 방향이 시원찮게 읽히는 책(거꾸로 꽂힌 책 등)은 그때 다시 세 방향을 다 본다.
+ * 정하면 나머지는 한 번씩만 읽으면 된다.
  */
 const DIRECTION_PROBE = 4;
-/** 제목 앞뒤의 짧은 조각을 군더더기로 볼 신뢰도 기준 */
-const EDGE_NOISE_CONFIDENCE = 55;
-/** 점수를 낼 때 한글 음절 하나를 라틴 글자 몇 개로 칠지 */
-const HANGUL_WEIGHT = 1.6;
-/**
- * 제목으로 볼 글자 크기 (책등에서 가장 큰 글자 대비).
- * 책등에는 제목 말고도 출판사·시리즈 번호·지은이·분류가 잔글씨로 들어간다.
- * 사람이 제목을 알아보는 방식 그대로, 눈에 띄게 큰 글자만 남긴다.
- */
-const TITLE_SIZE_RATIO = 0.55;
-/**
- * 언어 데이터를 받는 데 이만큼 걸리면 실패로 본다.
- * tesseract.js 는 내려받기가 막혀도 예외를 던지지 않고 그대로 멈춰 있어서,
- * 이 시간을 두지 않으면 화면이 "읽는 중"에서 영원히 돌아간다.
- */
-const MODEL_TIMEOUT_MS = 90_000;
+/** 이 점수에 못 미치면 방향을 잘못 골랐다고 보고 나머지 방향도 읽어 본다 */
+const WEAK_SCORE = 60;
 
-let cached: { langs: string; worker: Worker } | null = null;
-let cachedVertical: Worker | null = null;
-
-/** 하위 경로에 배포해도 자산을 찾을 수 있게 base를 붙인다. */
-function assetBase(): string {
-  const base = import.meta.env.BASE_URL || "/";
-  return base.endsWith("/") ? base : `${base}/`;
-}
-
-/** 언어 데이터는 처음 한 번만 내려받는다. 워커는 다음 촬영에서 다시 쓴다. */
-async function getWorker(langs: string, onProgress?: (p: ScanProgress) => void): Promise<Worker> {
-  if (cached?.langs === langs) return cached.worker;
-  await cached?.worker.terminate();
-  cached = null;
-
-  const worker = await spawn(langs, PSM.SINGLE_BLOCK, onProgress);
-  cached = { langs, worker };
-  return worker;
-}
-
-/** 세로로 쌓인 한글 전용 워커. 한국어를 켰을 때만 만든다. */
-async function getVerticalWorker(onProgress?: (p: ScanProgress) => void): Promise<Worker | null> {
-  if (cachedVertical) return cachedVertical;
-  try {
-    cachedVertical = await spawn(VERTICAL_LANG, PSM.SINGLE_BLOCK_VERT_TEXT, onProgress);
-    return cachedVertical;
-  } catch {
-    // 세로 모델을 못 받아도 가로 인식만으로 동작해야 한다.
-    return null;
-  }
-}
-
-/** 정해진 시간 안에 끝나지 않으면 실패로 처리한다. */
-async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), ms);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function spawn(
-  langs: string,
-  psm: PSM,
-  onProgress?: (p: ScanProgress) => void,
-): Promise<Worker> {
-  const creating = createWorker(langs, 1, {
-    // 워커와 wasm 코어는 앱과 함께 배포한다 (scripts/copy-tesseract-assets.mjs).
-    // CDN에 의존하면 오프라인에서 못 쓰고, 경로가 어긋나면 통째로 실패한다.
-    workerPath: `${assetBase()}tesseract/worker.min.js`,
-    corePath: `${assetBase()}tesseract/`,
-    // 언어 데이터 경로를 넘기지 않으면 tesseract.js 가 언어별 CDN 경로를 알아서 쓴다.
-    // (LSTM 전용 모델이라 영어 기준 3MB 남짓. 직접 지정하면 8비트가 아닌 큰 모델을 받게 된다.)
-    // npm run fetch:langdata 로 받아 두고 VITE_TESSDATA_PATH=/tessdata 를 주면 완전 오프라인이 된다.
-    ...(import.meta.env.VITE_TESSDATA_PATH ? { langPath: import.meta.env.VITE_TESSDATA_PATH } : {}),
-    logger: (message: { status?: string; progress?: number }) => {
-      if (message.status?.includes("load") || message.status?.includes("initializ")) {
-        onProgress?.({ phase: "글자 인식 모델 준비 중", done: message.progress ?? 0, total: 1 });
-      }
-    },
-  });
-
-  const worker = await withTimeout(
-    creating,
-    MODEL_TIMEOUT_MS,
-    "글자 인식 모델을 내려받지 못했습니다. 인터넷 연결을 확인해 주세요. " +
-      "(오프라인으로 쓰려면 npm run fetch:langdata 로 받아 두세요)",
-  ).catch((error: unknown) => {
-    // 늦게라도 워커가 만들어지면 메모리에 남지 않도록 정리한다.
-    void creating.then((late) => late.terminate()).catch(() => {});
-    throw error;
-  });
-
-  await worker.setParameters({ tessedit_pageseg_mode: psm });
-  return worker;
-}
-
-/** 이 언어의 모델을 이미 받아 뒀는지. 처음 실행인지 알려 줄 때 쓴다. */
-export function hasOcrModel(langs: string): boolean {
-  return cached?.langs === langs;
+/** 모델을 이미 받아 뒀는지. 처음 실행인지 알려 줄 때 쓴다. */
+export function hasOcrModel(): boolean {
+  return hasModels();
 }
 
 export async function releaseOcr(): Promise<void> {
-  await cached?.worker.terminate();
-  await cachedVertical?.terminate();
-  cached = null;
-  cachedVertical = null;
+  await releaseModels();
 }
 
 /** 책장 사진 한 장에서 책등을 찾아 한 권씩 읽는다. */
 export async function readShelf(
   image: HTMLCanvasElement,
-  { langs, onProgress, signal, verticalMode = "auto", segment }: ReadShelfOptions,
+  { onProgress, signal, segment }: ReadShelfOptions,
 ): Promise<ShelfResult> {
-  const worker = await getWorker(langs, onProgress);
+  await loadModels((ratio) =>
+    onProgress?.({ phase: "글자 인식 모델 준비 중", done: ratio, total: 1 }),
+  );
   onProgress?.({ phase: "책등 찾는 중", done: 0, total: 1 });
 
   const { bands, tiltDeg } = segmentSpines(image, segment);
   const usedFallback = bands.length < 2;
 
   if (usedFallback) {
-    // 책등을 못 나눴다. 사진 전체를 세 방향으로 읽어 줄 단위로 건진다.
-    const readings = await readWholeImage(worker, image, onProgress, signal);
+    // 책등을 못 나눴다. 사진 전체를 한 권으로 보고 읽어 건진다.
+    const readings = await readWholeImage(image, onProgress, signal);
     return { readings, tiltDeg, usedFallback: true };
   }
-
-  // 한국어를 켰으면 세로로 쌓인 글자도 읽을 준비를 한다.
-  const wantsVertical = langs.includes("kor") && verticalMode !== "off";
-  if (!wantsVertical && cachedVertical) {
-    // 영어로 바꿨으면 세로 모델은 메모리에서 내린다.
-    await cachedVertical.terminate();
-    cachedVertical = null;
-  }
-  const verticalWorker = wantsVertical ? await getVerticalWorker(onProgress) : null;
 
   // 책장 양 끝의 배경 조각이나 책 사이 그림자는 밴드로 잡히지만 책이 아니다.
   // 글자를 하나도 못 읽은 밴드는 두께로 가른다. 책이라면 다른 책과 두께가 비슷하다.
@@ -221,27 +98,22 @@ export async function readShelf(
     if (signal?.aborted) break;
     onProgress?.({ phase: "책등 읽는 중", done: index, total: bands.length });
 
-    // 흑백을 뒤집어도 같이 읽어 보면 짙은 바탕에 흰 글자인 책등이 살아난다. 다만 전체로
-    // 재 보면 실제 사진 12/40 이 그대로고 시간만 두 배가 됐다. 그래서 기본으로는 켜지 않는다.
-    // 한 권씩 확인할 때는 bench/spine.mjs 가 양쪽을 다 읽어 보여 준다.
-    const degrees = verticalWorker ? [90, -90, 0] : [90, -90];
-    const wanted: Shot[] = degrees.map((deg) => ({ deg, invert: false }));
-    const first =
-      settled !== null && verticalMode !== "always"
-        ? wanted.filter((shot) => shot.deg === settled)
-        : wanted;
-    let candidates = await readShots(worker, verticalWorker, band, first);
+    // 흑백 반전도 같이 읽어 보면 짙은 바탕에 흰 글자인 책등이 살아나지만, 전체로 재 보면
+    // 합계가 그대로고 시간만 두 배가 됐다. 그래서 기본으로는 켜지 않는다 (crop API 에는 남아 있다).
+    const wanted: Shot[] = [90, -90].map((deg) => ({ deg, invert: false }));
+    const first = settled !== null ? wanted.filter((shot) => shot.deg === settled) : wanted;
+    let candidates = await readShots(band, first);
 
-    // 정한 방향으로 잘 안 읽히면 거꾸로 꽂혔거나 글자가 쌓인 책이다. 나머지도 본다.
-    if ((candidates[0]?.score ?? 0) < VERTICAL_RETRY_SCORE && first.length < wanted.length) {
+    // 정한 방향으로 잘 안 읽히면 거꾸로 꽂힌 책이다. 나머지도 본다.
+    if ((candidates[0]?.score ?? 0) < WEAK_SCORE && first.length < wanted.length) {
       const rest = wanted.filter((shot) => shot.deg !== settled);
-      candidates = [...candidates, ...(await readShots(worker, verticalWorker, band, rest))];
+      candidates = [...candidates, ...(await readShots(band, rest))];
       candidates.sort((a, b) => b.score - a.score);
     }
 
     const best = candidates[0];
     if (!best) continue;
-    if (best.score >= VERTICAL_RETRY_SCORE) votes.push(best.deg);
+    if (best.score >= WEAK_SCORE) votes.push(best.deg);
     if (settled === null && votes.length >= DIRECTION_PROBE) settled = majority(votes);
 
     // 제목을 못 읽었어도 두께가 책만 하면 자리를 남긴다.
@@ -273,34 +145,26 @@ interface Shot {
 }
 
 interface Candidate {
-  /** 어느 방향으로 읽었는지 (90/-90 은 돌려 세운 글자, 0 은 쌓인 글자) */
+  /** 어느 방향으로 읽었는지 (90 은 위→아래, -90 은 아래→위) */
   deg: number;
-  /** 흑백을 뒤집어 읽었는지 */
-  invert: boolean;
   text: string;
-  /** 다듬기 전 OCR 원문 */
+  /** 다듬기 전 인식 원문 */
   raw: string;
+  /** 0~100 */
   score: number;
 }
 
 /** 한 책등을 주어진 방법들로 읽는다. 크롭은 읽자마자 버린다. */
-async function readShots(
-  worker: Worker,
-  verticalWorker: Worker | null,
-  band: SpineBand,
-  shots: Shot[],
-): Promise<Candidate[]> {
-  const results = await Promise.all(
-    shots.map(async ({ deg, invert }) => {
-      const variant = band.crop(deg, invert);
-      const engine = deg === 0 && verticalWorker ? verticalWorker : worker;
-      try {
-        return await readVariant(engine, variant, deg === 0);
-      } finally {
-        releaseVariants([variant]);
-      }
-    }),
-  );
+async function readShots(band: SpineBand, shots: Shot[]): Promise<Candidate[]> {
+  const results: Candidate[] = [];
+  for (const { deg, invert } of shots) {
+    const variant = band.crop(deg, invert);
+    try {
+      results.push(await readVariant(variant));
+    } finally {
+      releaseVariants([variant]);
+    }
+  }
   return results.sort((a, b) => b.score - a.score);
 }
 
@@ -311,208 +175,52 @@ function majority(values: number[]): number {
   return [...tally.entries()].sort((a, b) => b[1] - a[1])[0][0];
 }
 
-/**
- * @param stacked 세로로 쌓인 글자를 읽은 것인지.
- *   쌓인 글자에는 띄어쓰기가 없다. 모델이 음절 사이에 넣은 공백은 전부 군더더기다.
- */
-async function readVariant(
-  worker: Worker,
-  variant: SpineVariant,
-  stacked = false,
-): Promise<Candidate> {
-  const { deg, invert } = variant;
-  const { data } = await worker.recognize(variant.canvas, {}, { blocks: true, text: true });
-  // 크롭은 책등 모양 그대로 가늘고 길다. 짧은 쪽이 곧 책등을 가로지르는 방향이다.
-  const across = variant.canvas.width >= variant.canvas.height ? "y" : "x";
-  const title = keepTitleLines(collectLines(data.blocks), across).flatMap((line) => line.words);
-  const raw = (data.text ?? "").replace(/\s+/g, " ").trim();
-  const trimmed = trimEdgeNoise(title) || raw;
-  // 쌓인 글자는 띄어쓰기가 없다. 다만 군더더기 토막부터 걸러 낸 뒤에 붙여야 한다.
-  // 먼저 붙이면 "2#.배고픈늑대와…" 처럼 기호까지 제목에 눌어붙는다.
-  const cleaned = cleanText(trimmed);
-  const text = stacked ? cleaned.replace(/\s+/g, "") : cleaned;
-  // 점수도 제목 글자만 보고 낸다. 잔글씨를 길게 오독한 쪽이 이기면 방향까지 틀린다.
-  return { deg, invert, text, raw, score: scoreWords(title) };
-}
-
-/**
- * 제목 앞뒤에 붙은 짧은 오독을 떼어낸다.
- * 옆 책 그림자나 책등 끝의 무늬가 "UN", "55덱" 같은 조각으로 읽히는 일이 잦다.
- * 가운데 글자는 건드리지 않는다. 확신이 낮아도 제목의 일부일 수 있다.
- */
-function trimEdgeNoise(words: LooseWord[]): string {
-  const isNoise = (word: LooseWord | undefined) => {
-    if (!word) return false;
-    const text = (word.text ?? "").trim();
-    const letters = (text.match(/[A-Za-z가-힣0-9]/g) ?? []).length;
-    if (!letters) return true; // 기호만 남은 토막
-    const confidence = word.confidence ?? 0;
-    // 한글은 한두 글자로도 제목의 일부일 때가 많다. 확신이 아주 낮을 때만 뗀다.
-    if (/[가-힣]/.test(text)) return letters <= 2 && confidence < 40;
-    return letters <= 3 && confidence < EDGE_NOISE_CONFIDENCE;
+async function readVariant(variant: SpineVariant): Promise<Candidate> {
+  const read = await readLine(variant.canvas);
+  return {
+    deg: variant.deg,
+    text: cleanText(read.text),
+    raw: read.text,
+    score: read.confidence * 100,
   };
-
-  let start = 0;
-  let end = words.length;
-  while (start < end && isNoise(words[start])) start++;
-  while (end > start && isNoise(words[end - 1])) end--;
-
-  const kept = words.slice(start, end).map((word) => (word.text ?? "").trim());
-  return kept.join(" ").replace(/\s+/g, " ").trim();
 }
 
-/**
- * 글자 한 줄의 크기.
- *
- * 낱말 하나로 재면 안 된다. 라틴 문자는 "and" 처럼 위아래로 삐침이 없는 낱말의 상자가
- * "Thinking" 의 절반밖에 안 돼서, 같은 제목인데도 절반이 잘려 나간다.
- * 줄 전체 상자를 쓰면 같은 줄에 있는 낱말은 모두 같은 크기로 본다.
- */
-function lineSize(line: LooseLine, across: "x" | "y"): number {
-  const box = line.bbox;
-  if (!box) return 0;
-  const size = across === "y" ? (box.y1 ?? 0) - (box.y0 ?? 0) : (box.x1 ?? 0) - (box.x0 ?? 0);
-  return size > 0 ? size : 0;
-}
-
-/**
- * 책등에서 제목 줄만 남긴다.
- *
- * 한 책등에는 제목 말고도 출판사 이름, 시리즈 번호, 지은이, 분류가 잔글씨로 찍혀 있다.
- * 전부 이어 붙이면 "ChildApple 드림 28 곰이의 카레라이스 건강과 안전" 같은 게 나오고,
- * 잔글씨를 길게 오독한 쪽이 점수까지 이겨 읽기 방향마저 틀린다.
- * 제목은 늘 책등에서 가장 큰 글자다. 그 크기에 못 미치는 줄은 버린다.
- */
-function keepTitleLines(lines: LooseLine[], across: "x" | "y"): LooseLine[] {
-  const sized = lines.filter((line) => (line.text ?? "").trim() && lineSize(line, across) > 0);
-  if (sized.length < 2) return lines;
-
-  const sizes = sized.map((line) => lineSize(line, across)).sort((a, b) => a - b);
-  // 최댓값 대신 상위 10% 값을 기준으로 삼는다. 크게 번진 오독 한 줄에 기준이 끌려가지 않게.
-  const largest = sizes[Math.floor(sizes.length * 0.9)] ?? sizes[sizes.length - 1];
-  const kept = sized.filter((line) => lineSize(line, across) >= largest * TITLE_SIZE_RATIO);
-  return kept.length ? kept : lines;
-}
-
-/** 분할 실패 시: 사진 전체를 0/90/-90도로 읽고 줄마다 후보를 만든다. */
+/** 분할 실패 시: 사진 전체를 한 권으로 보고 세 방향으로 읽는다. */
 async function readWholeImage(
-  worker: Worker,
   image: HTMLCanvasElement,
   onProgress?: (p: ScanProgress) => void,
   signal?: AbortSignal,
 ): Promise<SpineReading[]> {
-  const variants = wholeImageVariants(image);
+  const band = singleSpine(image);
   const readings: SpineReading[] = [];
 
-  for (const [index, variant] of variants.entries()) {
+  for (const [index, deg] of [0, 90, -90].entries()) {
     if (signal?.aborted) break;
-    onProgress?.({ phase: "사진 전체를 읽는 중", done: index, total: variants.length });
-
-    const { data } = await worker.recognize(variant.canvas, {}, { blocks: true, text: true });
-    for (const line of collectLines(data.blocks)) {
-      const text = cleanText(line.text ?? "");
-      if (!text) continue;
-      const score = scoreWords(line.words);
-      if (score < 40) continue;
+    onProgress?.({ phase: "사진 전체를 읽는 중", done: index, total: 3 });
+    const variant = band.crop(deg);
+    try {
+      const candidate = await readVariant(variant);
+      if (!candidate.text) continue;
       readings.push({
         x0: 0,
         x1: 0,
         color: "#6b6257",
         widthRatio: 0,
-        text,
-        raw: (line.text ?? "").replace(/\s+/g, " ").trim(),
+        text: candidate.text,
+        raw: candidate.raw,
         alternatives: [],
-        confidence: Math.min(1, score / 100),
+        confidence: Math.min(1, candidate.score / 100),
       });
+    } finally {
+      releaseVariants([variant]);
     }
   }
 
-  onProgress?.({ phase: "사진 전체를 읽는 중", done: variants.length, total: variants.length });
+  onProgress?.({ phase: "사진 전체를 읽는 중", done: 3, total: 3 });
   return dedupe(readings);
 }
 
-/**
- * 글자 수를 센다. 한글 음절은 자모 두세 개가 모인 글자라 라틴 한 글자보다 정보가 많다.
- * 같은 무게로 세면 "코스모스"(4)가 길기만 한 영문 오독보다 늘 낮게 나온다.
- */
-function countLetters(text: string): number {
-  const hangul = (text.match(/[가-힣]/g) ?? []).length;
-  const latin = (text.match(/[A-Za-z]/g) ?? []).length;
-  return latin + hangul * HANGUL_WEIGHT;
-}
-
-type LooseWord = {
-  text?: string;
-  confidence?: number;
-  bbox?: { x0?: number; y0?: number; x1?: number; y1?: number };
-};
-type LooseLine = {
-  text?: string;
-  words: LooseWord[];
-  bbox?: { x0?: number; y0?: number; x1?: number; y1?: number };
-};
-type LooseBlock = { paragraphs?: { lines?: LooseLine[] }[] };
-
-function collectLines(blocks: unknown): LooseLine[] {
-  const list = (blocks as LooseBlock[] | null | undefined) ?? [];
-  return list.flatMap((block) =>
-    (block.paragraphs ?? []).flatMap((paragraph) =>
-      (paragraph.lines ?? []).map((line) => ({
-        text: line.text ?? "",
-        words: line.words ?? [],
-        bbox: line.bbox,
-      })),
-    ),
-  );
-}
-
-/**
- * 어느 방향으로 읽은 것이 맞는지 고르는 점수.
- *
- * 페이지 전체 신뢰도는 거꾸로 읽은 글자에도 높게 나와 못 믿는다.
- * 글자 수로 가중한 단어 신뢰도에, 기호 범벅과 너무 짧은 결과를 깎아 쓴다.
- */
-function scoreWords(words: LooseWord[]): number {
-  let weight = 0;
-  let sum = 0;
-  let letters = 0;
-  let solid = 0;
-  let junk = 0;
-  let hangul = 0;
-  let latin = 0;
-
-  for (const word of words) {
-    const text = (word.text ?? "").trim();
-    if (!text) continue;
-    const syllables = (text.match(/[가-힣]/g) ?? []).length;
-    const alphabet = (text.match(/[A-Za-z]/g) ?? []).length;
-    hangul += syllables;
-    latin += alphabet;
-    junk += (text.match(/[^A-Za-z가-힣0-9\s.,'":\-&!?]/g) ?? []).length;
-
-    const letterCount = countLetters(text);
-    letters += letterCount;
-    // 한글은 한 글자로도 뜻이 있다. 세로로 쌓인 제목은 음절 하나씩 떨어져 나오므로
-    // 두 글자 미만을 버리면 제대로 읽은 결과가 통째로 0점이 된다.
-    if (syllables === 0 && alphabet < 2) continue;
-    // 라틴 두 글자짜리 토막은 거꾸로 읽었을 때 쏟아진다. 알맹이로 치지 않는다.
-    if (syllables > 0 || alphabet >= 3) solid += letterCount;
-    weight += letterCount;
-    sum += (word.confidence ?? 0) * letterCount;
-  }
-
-  if (!weight) return 0;
-  const junkPenalty = 1 - Math.min(0.6, junk / Math.max(4, letters + junk));
-  const lengthBonus = Math.min(1, letters / 6);
-  // 한두 글자 토막만 잔뜩 나온 읽기는 대개 방향을 잘못 잡은 것이다.
-  const solidRatio = Math.max(0.25, solid / Math.max(1, letters));
-  // 한글이 나왔다면 방향을 제대로 잡았다는 뜻이다. 거꾸로 읽으면 라틴 잡동사니가 나온다.
-  const scriptBonus = hangul >= 2 ? 1 + 0.6 * (hangul / Math.max(1, hangul + latin)) : 1;
-
-  return (sum / weight) * junkPenalty * lengthBonus * solidRatio * scriptBonus;
-}
-
-/** OCR 결과에서 군더더기를 걷어낸다. */
+/** 인식 결과에서 군더더기를 걷어낸다. */
 export function cleanText(raw: string): string {
   const collapsed = raw.replace(/\s+/g, " ").trim();
   const tokens = collapsed
@@ -563,26 +271,24 @@ function dedupe(readings: SpineReading[]): SpineReading[] {
 
 /**
  * 이미 한 권만 잘려 있는 이미지를 읽는다 (bench/spine.mjs 진단용).
- * 세 방향을 모두 읽어 점수 순으로 돌려준다. 분할을 거치지 않으므로,
- * 분할이 범인인지 OCR이 범인인지 가를 때 쓴다.
+ * 세 방향을 모두 읽어 점수 순으로 돌려준다.
  */
 export async function readSpineImage(
   image: HTMLCanvasElement,
-  langs = "kor+eng",
   segment: SegmentOptions = {},
 ): Promise<{ deg: number; invert: boolean; text: string; raw: string; score: number }[]> {
-  const worker = await getWorker(langs);
-  const vertical = langs.includes("kor") ? await getVerticalWorker() : null;
+  await loadModels();
   const band = singleSpine(image, segment);
 
-  const results: Candidate[] = [];
+  const results: (Candidate & { invert: boolean })[] = [];
   for (const deg of [90, -90, 0]) {
-    if (deg === 0 && !vertical) continue;
-    const variant = band.crop(deg);
-    try {
-      results.push(await readVariant(deg === 0 && vertical ? vertical : worker, variant, deg === 0));
-    } finally {
-      releaseVariants([variant]);
+    for (const invert of [false, true]) {
+      const variant = band.crop(deg, invert);
+      try {
+        results.push({ ...(await readVariant(variant)), invert });
+      } finally {
+        releaseVariants([variant]);
+      }
     }
   }
   return results.sort((a, b) => b.score - a.score);

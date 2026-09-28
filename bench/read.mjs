@@ -3,7 +3,7 @@
  * 정답이 없는 실제 사진을 눈으로 검토할 때 쓴다.
  *
  *   npm run dev            # 다른 터미널에서
- *   node bench/read.mjs ~/photo.jpg [--langs kor+eng] [--vertical always]
+ *   node bench/read.mjs ~/photo.jpg
  */
 import fs from "node:fs";
 import { chromium } from "playwright";
@@ -15,7 +15,7 @@ const valueOf = (flag) => {
   return index >= 0 ? args[index + 1] : undefined;
 };
 if (!file) {
-  console.error("사용법: node bench/read.mjs <이미지> [--langs kor+eng] [--vertical auto]");
+  console.error("사용법: node bench/read.mjs <이미지> [--segment '{json}'] [--raw]");
   process.exit(1);
 }
 
@@ -36,8 +36,6 @@ await page.waitForFunction(() => window.__ready === true, { timeout: 30000 });
 const mime = /\.png$/i.test(file) ? "image/png" : "image/jpeg";
 const dataUrl = `data:${mime};base64,${fs.readFileSync(file).toString("base64")}`;
 const options = {
-  langs: valueOf("--langs") ?? "kor+eng",
-  ...(valueOf("--vertical") ? { verticalMode: valueOf("--vertical") } : {}),
   ...(valueOf("--segment") ? { segment: JSON.parse(valueOf("--segment")) } : {}),
 };
 
