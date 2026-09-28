@@ -178,7 +178,9 @@ for (const testCase of CASES) {
   if (shrinkTo) dataUrl = await shrink(app, dataUrl, shrinkTo);
   const result = await app.evaluate(
     ([url, options]) => window.__bench(url, options),
-    [dataUrl, { segment: {
+    [dataUrl, {
+      ...(valueOf("--engine") ? { engine: valueOf("--engine") } : {}),
+      segment: {
         ...(spineWidth ? { targetSpineWidth: Number(spineWidth) } : {}),
         ...(segmentOverride ? JSON.parse(segmentOverride) : {}),
       } }],

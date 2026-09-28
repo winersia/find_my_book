@@ -449,8 +449,10 @@ node bench/copy.mjs --verbose                 # 화면에 적힌 설명 글자 �
 
 ```
 docs/시나리오.md     사용자 시나리오와 완료 기준
+docs/인식률-개선.md  못 읽은 책을 줄인 다섯 번의 반복과 그 측정
 src/lib/bookcase.ts  책장·칸·책 자료 구조와 편집 연산, 저장, 내보내기
-src/lib/segment.ts   선반 구간 찾기, 책등 분할, 기울기 편 크롭 생성, 책등 색 뽑기
+src/lib/lines.ts     검출 지도에서 글자 줄 뽑기, 기울기대로 자르기, 쌓은 글자 재배열
+src/lib/segment.ts   선반 구간 찾기, 책등 분할(색·두께와 예비 경로), 책등 색 뽑기
 src/lib/ppocr.ts     PaddleOCR 모델 관리, 제목 구간 찾기(검출), 글자 인식(CTC 해독)
 src/lib/ocr.ts       책등마다 방향 정하기, 읽기 선택, 텍스트 정리
 src/lib/enrich.ts    Open Library 조회 (실패해도 무시)

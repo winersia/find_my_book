@@ -366,3 +366,51 @@ export async function readLine(canvas: HTMLCanvasElement): Promise<SpineText> {
   }
   return read;
 }
+
+/** 검출 모델이 본 글자 확률 지도. 가로 `width`, 세로 `height`, 값 0~1 */
+export interface TextMap {
+  data: Float32Array;
+  width: number;
+  height: number;
+  /** 원본 대비 배율 (지도 좌표 / scale = 원본 좌표) */
+  scale: number;
+}
+
+/**
+ * 사진 한 장 전체에 검출 모델을 돌린다.
+ *
+ * 긴 변을 `maxSide` 로 맞추고 32의 배수로 채운다. 책등 글자는 작아서 너무 줄이면
+ * 지도에서 사라진다.
+ */
+export async function detectText(canvas: HTMLCanvasElement, maxSide = 1600): Promise<TextMap> {
+  await loadModels();
+  if (!det) throw new Error("검출 모델이 없습니다.");
+  const scale = Math.min(1, maxSide / Math.max(canvas.width, canvas.height));
+  const drawnWidth = Math.round(canvas.width * scale);
+  const drawnHeight = Math.round(canvas.height * scale);
+  const width = Math.ceil(drawnWidth / 32) * 32;
+  const height = Math.ceil(drawnHeight / 32) * 32;
+
+  const small = document.createElement("canvas");
+  small.width = width;
+  small.height = height;
+  const ctx = small.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("캔버스를 만들 수 없습니다.");
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, width, height);
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(canvas, 0, 0, drawnWidth, drawnHeight);
+
+  const pixels = ctx.getImageData(0, 0, width, height).data;
+  small.width = 0;
+  small.height = 0;
+  const mean = [0.485, 0.456, 0.406];
+  const deviation = [0.229, 0.224, 0.225];
+  const plane = width * height;
+  const input = new Float32Array(3 * plane);
+  for (let at = 0; at < plane; at++) {
+    for (let c = 0; c < 3; c++) input[c * plane + at] = (pixels[at * 4 + c] / 255 - mean[c]) / deviation[c];
+  }
+  const result = await det.run({ [det.inputNames[0]]: new ort!.Tensor("float32", input, [1, 3, height, width]) });
+  return { data: result[det.outputNames[0]].data as Float32Array, width, height, scale };
+}

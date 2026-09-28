@@ -15,7 +15,7 @@ const valueOf = (flag) => {
   return index >= 0 ? args[index + 1] : undefined;
 };
 if (!file) {
-  console.error("사용법: node bench/read.mjs <이미지> [--segment '{json}'] [--raw]");
+  console.error("사용법: node bench/read.mjs <이미지> [--engine lines|bands] [--lines '{json}'] [--segment '{json}'] [--raw]");
   process.exit(1);
 }
 
@@ -37,6 +37,8 @@ const mime = /\.png$/i.test(file) ? "image/png" : "image/jpeg";
 const dataUrl = `data:${mime};base64,${fs.readFileSync(file).toString("base64")}`;
 const options = {
   ...(valueOf("--segment") ? { segment: JSON.parse(valueOf("--segment")) } : {}),
+  ...(valueOf("--engine") ? { engine: valueOf("--engine") } : {}),
+  ...(valueOf("--lines") ? { lines: JSON.parse(valueOf("--lines")) } : {}),
 };
 
 const result = await page.evaluate(([url, opts]) => window.__bench(url, opts), [dataUrl, options]);

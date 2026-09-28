@@ -44,15 +44,26 @@ function partialSimilarity(needle, haystack) {
   return 1 - Math.min(...previous) / needle.length;
 }
 
-/** 본문과 "다르게 읽기" 후보를 모두 candidates 로 본다. 화면에서 골라 쓸 수 있는 것들이다. */
+/**
+ * 채점할 읽기들.
+ *
+ * 기본은 본 제목만 본다. 사용자가 입력칸에서 보는 것이 그것이다.
+ * ALT=1 이면 "다르게 읽기" 후보까지 본다. 화면에서 골라 쓸 수는 있지만 확인 필요로
+ * 표시된 책에만 나오고, 무엇보다 사용자가 직접 찾아 골라야 한다. 예전 숫자와 견줄 때만 쓴다.
+ */
+const withAlternatives = process.env.ALT === "1";
 function readingsOf(file) {
   return fs
     .readFileSync(file, "utf8")
     .split("\n")
     .filter((line) => /^\s*\d+\./.test(line))
     .map((line) => line.replace(/^\s*\d+\.\s*x\S+\s+\d+%\s*/, ""))
-    .flatMap((line) => line.split(/\[대안|\|/).map((part) => part.replace(/\]/g, "").trim()))
-    .filter(Boolean);
+    .flatMap((line) =>
+      withAlternatives
+        ? line.split(/\[대안|\|/).map((part) => part.replace(/\]/g, "").trim())
+        : [line.split("[대안")[0].trim()],
+    )
+    .filter((text) => text && text !== "(못 읽음)");
 }
 
 const BUCKETS = [
