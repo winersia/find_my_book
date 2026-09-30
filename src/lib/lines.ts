@@ -563,10 +563,17 @@ export function groupLines(
     }
   }
   pairs.sort((p, q) => p[0] - q[0]);
+  const order = lines.map((line) => line.shelfX);
   for (const [, i, j] of pairs) {
     const a = owner[i];
     const b = owner[j];
     if (a === b) continue;
+    // 책의 줄들은 선반 위에서 이어진 구간을 차지한다. 사이에 다른 책의 줄이 있으면
+    // 건너뛰어 합치지 않는다. 안 그러면 한 칸 건너 책끼리 한 권이 된다.
+    const low = Math.min(order[i], order[j]);
+    const high = Math.max(order[i], order[j]);
+    const between = order.some((x, k) => x > low && x < high && owner[k] !== a && owner[k] !== b);
+    if (between) continue;
     const blocked = members[a].some((x) => members[b].some((y) => separated(x, y)));
     if (blocked) continue;
     for (const k of members[b]) owner[k] = a;
@@ -622,20 +629,27 @@ export function boundaryScore(
   const pad = Math.max(a.thickness, b.thickness);
   const hasText = (y: number, line: TextLine) => y >= line.top - pad && y <= line.bottom + pad;
   const steps = 24;
-  const profile = new Float32Array(steps + 1);
-  let rows = 0;
-  for (let y = top; y <= bottom; y += 2) {
-    if (hasText(y, a) || hasText(y, b)) continue;
-    const left = a.cx + a.lean * (y - a.cy) + a.thickness * 0.5;
-    const right = b.cx + b.lean * (y - b.cy) - b.thickness * 0.5;
-    if (right - left < 2) continue;
-    rows++;
-    for (let k = 0; k <= steps; k++) {
-      const x = Math.round(left + ((right - left) * k) / steps);
-      if (x < 1 || x >= width - 1) continue;
-      profile[k] += Math.abs(luma[y * width + x + 1] - luma[y * width + x - 1]);
+  const measure = (textRows: boolean, margin: number) => {
+    const profile = new Float32Array(steps + 1);
+    let rows = 0;
+    for (let y = top; y <= bottom; y += 2) {
+      if (!textRows && (hasText(y, a) || hasText(y, b))) continue;
+      const left = a.cx + a.lean * (y - a.cy) + a.thickness * margin;
+      const right = b.cx + b.lean * (y - b.cy) - b.thickness * margin;
+      if (right - left < 2) continue;
+      rows++;
+      for (let k = 0; k <= steps; k++) {
+        const x = Math.round(left + ((right - left) * k) / steps);
+        if (x < 1 || x >= width - 1) continue;
+        profile[k] += Math.abs(luma[y * width + x + 1] - luma[y * width + x - 1]);
+      }
     }
-  }
+    return { profile, rows };
+  };
+  // 글자 없는 행으로 재는 것이 먼저다. 제목이 책등을 거의 다 채워 그런 행이 모자라면
+  // 글자 행까지 쓰되, 글자 획을 피하도록 여백을 넓힌다.
+  let { profile, rows } = measure(false, 0.5);
+  if (rows < 20) ({ profile, rows } = measure(true, 0.9));
   if (rows < 8) return 0;
   const sorted = Array.from(profile).sort((p, q) => p - q);
   const median = sorted[Math.floor(sorted.length / 2)] || 1e-6;
