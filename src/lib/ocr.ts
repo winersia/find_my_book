@@ -259,6 +259,18 @@ async function readLines(
     .map((group) => group.map((line) => byLine.get(line)).filter((item) => item !== undefined))
     .filter((group) => group.length > 0);
 
+  // 여러 책등에 되풀이되는 글자는 시리즈 이름이다 ("이야기 솜사탕", "안녕 마음아",
+  // "드림차일드애플"). 굵고 또렷하게 찍혀 있어 굵기로 고르면 제목을 이긴다.
+  const repeated = new Set<(typeof read)[number]>();
+  groups.forEach((group, index) => {
+    for (const item of group) {
+      const others = groups.filter(
+        (other, k) => k !== index && other.some((o) => similar(o.best.text, item.best.text)),
+      );
+      if (others.length > 0) repeated.add(item);
+    }
+  });
+
   const readings: SpineReading[] = [];
   for (const group of groups) {
     const withText = group.filter((item) => item.best.text);
@@ -273,7 +285,8 @@ async function readLines(
     const titleness = (item: (typeof withText)[number]) => {
       const letters = (item.best.text.match(/[A-Za-z0-9가-힣]/g) ?? []).length;
       const credit = isCreditLine(item.best.text) ? 0.3 : 1;
-      return item.line.thickness * (0.5 + item.best.score / 100) * (letters <= 3 ? 0.6 : 1) * credit;
+      const series = repeated.has(item) ? 0.3 : 1;
+      return item.line.thickness * (0.5 + item.best.score / 100) * (letters <= 3 ? 0.6 : 1) * credit * series;
     };
     const main = [...withText].sort((a, b) => titleness(b) - titleness(a))[0];
     // 두 글자 남짓을 겨우 읽은 조각은 책이 아니라 로고나 무늬다. 목록만 어지럽힌다.
@@ -322,6 +335,24 @@ function nearestBand(bands: SpineBand[], x: number): SpineBand | undefined {
 function rank(candidate: Candidate): number {
   const letters = (candidate.text.match(/[A-Za-z0-9가-힣]/g) ?? []).length;
   return (candidate.score / 100) ** 3 * Math.log(1 + letters);
+}
+
+/** 글자가 얼마나 닮았는지로 같은 줄인지 본다. OCR 이 한두 글자 틀려도 같다고 친다. */
+function similar(a: string, b: string): boolean {
+  const x = a.match(/[A-Za-z0-9가-힣]/g) ?? [];
+  const y = b.match(/[A-Za-z0-9가-힣]/g) ?? [];
+  if (x.length < 3 || y.length < 3) return false;
+  const row = Array.from({ length: y.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= x.length; i++) {
+    let diagonal = row[0];
+    row[0] = i;
+    for (let j = 1; j <= y.length; j++) {
+      const above = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, diagonal + (x[i - 1] === y[j - 1] ? 0 : 1));
+      diagonal = above;
+    }
+  }
+  return 1 - row[y.length] / Math.max(x.length, y.length) >= 0.6;
 }
 
 /** 같은 글자들인데 순서만 다른지. 순서까지 같으면 둘 다 맞게 읽은 것이다. */
