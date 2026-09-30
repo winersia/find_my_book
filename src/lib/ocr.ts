@@ -6,7 +6,7 @@ import {
   type SpineBand,
   type SpineVariant,
 } from "./segment";
-import { findTextLines, type LineOptions, type TextLine } from "./lines";
+import { findTextLines, groupLines, type GroupOptions, type LineOptions, type TextLine } from "./lines";
 import { detectText, hasModels, loadModels, readLine, releaseModels, watchModels } from "./ppocr";
 
 /** 책등 한 권을 읽은 결과 */
@@ -52,7 +52,7 @@ export interface ReadShelfOptions {
    */
   engine?: "lines" | "bands";
   /** 글자 줄 찾기 설정 (벤치용) */
-  lines?: LineOptions & { detectSide?: number };
+  lines?: LineOptions & GroupOptions & { detectSide?: number };
 }
 
 export interface ShelfResult {
@@ -108,7 +108,7 @@ export async function readShelf(
     const map = await detectText(image, lineOptions?.detectSide ?? DETECT_SIDE);
     const found = findTextLines(image, map, lineOptions);
     if (found.length >= 2) {
-      const readings = await readLines(found, bands, onProgress, signal);
+      const readings = await readLines(image, found, bands, onProgress, signal, lineOptions);
       return { readings, tiltDeg, usedFallback: false };
     }
   }
@@ -187,8 +187,17 @@ const DETECT_SIDE = 2560;
  */
 const CREDIT = /(그림|옮김|지음|엮음|글\s*[·・.]|\s씀(\s|$))/;
 
-/** 같은 책의 같은 세로줄로 볼 거리. 굵기 대비 */
-const SAME_COLUMN = 0.6;
+/**
+ * 저자 줄인지. 저자 줄은 이름이나 "글·그림"으로 시작하므로 저자 표시가 앞쪽에 온다.
+ * 제목과 저자가 한 세로줄에 이어져 한 줄로 읽히면("100층짜리 집 글·그림 이와이 도시오")
+ * 표시가 뒤쪽에 온다. 이것까지 저자 줄로 깎으면 세 글자 로고("북뱅크")가 제목이 됐다.
+ */
+function isCreditLine(text: string): boolean {
+  const match = CREDIT.exec(text);
+  if (!match) return false;
+  const lettersBefore = (text.slice(0, match.index).match(/[A-Za-z0-9가-힣]/g) ?? []).length;
+  return lettersBefore < 8;
+}
 
 /**
  * 글자 줄마다 읽고, 같은 책의 조각은 한 권으로 묶는다.
@@ -197,10 +206,12 @@ const SAME_COLUMN = 0.6;
  * 선반 가운데 높이의 x 가 거의 같으면 같은 책이다. 그중 글자가 가장 굵은 줄이 제목이다.
  */
 async function readLines(
+  image: HTMLCanvasElement,
   lines: TextLine[],
   bands: SpineBand[],
   onProgress: ((progress: ScanProgress) => void) | undefined,
   signal: AbortSignal | undefined,
+  groupOptions: GroupOptions = {},
 ): Promise<SpineReading[]> {
   const read: { line: TextLine; best: Candidate; candidates: Candidate[] }[] = [];
   const votes: number[] = [];
@@ -242,18 +253,11 @@ async function readLines(
   }
   onProgress?.({ kind: "read", phase: "책등 읽는 중", done: lines.length, total: lines.length });
 
-  // 한 권으로 묶기
-  const groups: (typeof read)[] = [];
-  for (const item of read) {
-    const last = groups[groups.length - 1];
-    const previous = last?.[last.length - 1];
-    const near =
-      previous &&
-      Math.abs(item.line.shelfX - previous.line.shelfX) <
-        SAME_COLUMN * Math.max(item.line.thickness, previous.line.thickness);
-    if (near) last.push(item);
-    else groups.push([item]);
-  }
+  // 한 권으로 묶기. 두 줄 사이에 책등 경계가 없으면 같은 책이다 (lines.ts).
+  const byLine = new Map(read.map((item) => [item.line, item]));
+  const groups = groupLines(image, lines, groupOptions)
+    .map((group) => group.map((line) => byLine.get(line)).filter((item) => item !== undefined))
+    .filter((group) => group.length > 0);
 
   const readings: SpineReading[] = [];
   for (const group of groups) {
@@ -268,7 +272,7 @@ async function readLines(
     // ("영리한 거미 아난시" 대신 "바바라 칸티니 그림 … 서보현 옮김").
     const titleness = (item: (typeof withText)[number]) => {
       const letters = (item.best.text.match(/[A-Za-z0-9가-힣]/g) ?? []).length;
-      const credit = CREDIT.test(item.best.text) ? 0.3 : 1;
+      const credit = isCreditLine(item.best.text) ? 0.3 : 1;
       return item.line.thickness * (0.5 + item.best.score / 100) * (letters <= 3 ? 0.6 : 1) * credit;
     };
     const main = [...withText].sort((a, b) => titleness(b) - titleness(a))[0];

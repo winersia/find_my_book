@@ -23,6 +23,12 @@ export interface TextLine {
   thickness: number;
   /** 선반 가운데 높이에서의 x. 왼쪽부터 늘어놓는 순서다. */
   shelfX: number;
+  /**
+   * 책의 기울기. 긴 줄은 제 기울기를 쓰고, 짧은 줄은 이웃 긴 줄들의 기울기를 빌린다.
+   * 책등 끝의 짧은 로고는 기울기 추정이 흔들려, 그대로 선반 가운데로 옮기면
+   * 이웃 책 자리에 떨어진다.
+   */
+  lean: number;
   /** 원본 좌표 기준 위아래 끝 */
   top: number;
   bottom: number;
@@ -206,17 +212,30 @@ export function findTextLines(
   // 4) 선반 가운데 높이에서의 x 로 왼쪽부터 세운다. 기울어진 책끼리 순서가 뒤바뀌지 않는다.
   const centers = found.map((line) => line.cy).sort((p, q) => p - q);
   const shelfY = centers[Math.floor(centers.length / 2)];
+  const lengths = found.map((line) => line.length).sort((p, q) => p - q);
+  const longEnough = Math.max(spec.minLength * 2.5, lengths[Math.floor(lengths.length / 2)]);
+  const long = found.filter((line) => line.length >= longEnough);
+  const leanOf = (line: LineShape) => {
+    if (line.length >= longEnough || long.length < 3) return line.slope;
+    const near = [...long]
+      .sort((p, q) => Math.abs(p.cx - line.cx) - Math.abs(q.cx - line.cx))
+      .slice(0, 4)
+      .map((other) => other.slope)
+      .sort((p, q) => p - q);
+    return (near[1] + near[2]) / 2;
+  };
   return found
     .map((line) => ({
       ...line,
-      shelfX: line.cx + line.slope * (shelfY - line.cy),
+      lean: leanOf(line),
+      shelfX: line.cx + leanOf(line) * (shelfY - line.cy),
       crop: (deg: number, invert = false) => cropLine(source, line, deg, invert),
       stacked: () => restack(source, line),
     }))
     .sort((p, q) => p.shelfX - q.shelfX);
 }
 
-type LineShape = Omit<TextLine, "shelfX" | "crop" | "stacked"> & {
+type LineShape = Omit<TextLine, "shelfX" | "lean" | "crop" | "stacked"> & {
   /** 글자 하나하나가 차지한 구간. 줄 중심 기준 줄 방향 거리 (원본 px) */
   cells: [number, number][];
 };
@@ -472,4 +491,168 @@ function cropLine(
     }
   }
   return { deg, invert, canvas };
+}
+
+export interface GroupOptions {
+  /** 경계 봉우리가 주변보다 이만큼 높으면 책등 경계로 본다 */
+  edgeRatio?: number;
+  /** 줄 사이 틈이 이보다 좁으면(굵기 대비) 한 세로줄로 보고 경계를 찾지 않는다 */
+  sameColumn?: number;
+}
+
+/**
+ * 글자 줄을 책으로 묶는다.
+ *
+ * 한 책등에는 제목·저자·시리즈명·출판사가 여러 세로줄로 찍혀 있어, 줄 하나를 책 하나로
+ * 보면 권수가 부푼다 (40권 → 46건). 가까운 줄을 무작정 이으면 이번에는 얇은 이웃 책이
+ * 먹힌다. 그래서 두 줄 사이에 책등 경계가 있는지 본다. 경계는 책의 기울기를 따라 위아래로
+ * 길게 이어지는 밝기 변화다. 글자나 그림의 경계는 몇 줄 가다 끊기므로, 줄 방향으로
+ * 평균하면 책등 경계만 봉우리로 남는다.
+ */
+export function groupLines(
+  source: HTMLCanvasElement,
+  lines: TextLine[],
+  options: GroupOptions = {},
+): TextLine[][] {
+  // 1.8 이면 무늬에도 경계가 서서 권수가 부풀고, 3.0 이면 얇은 이웃 책이 먹혔다.
+  const edgeRatio = options.edgeRatio ?? 2.4;
+  const sameColumn = options.sameColumn ?? 0.6;
+  const n = lines.length;
+  if (!n) return [];
+  const luma = lumaOf(source);
+
+  // 한 권의 두께. 긴 줄(대개 제목)끼리의 간격 중앙값이 책 한 권 폭쯤 된다.
+  const titles = lines.filter((line) => line.length >= 150).map((line) => line.shelfX);
+  const spacing = titles.slice(1).map((x, i) => x - titles[i]).sort((p, q) => p - q);
+  const book = spacing[Math.floor(spacing.length / 2)] ?? 40;
+  const reach = book * 2.5;
+  // 책이 서 있는 높이. 줄 위아래 끝의 분위수로 잡는다. 이 밖은 선반 판이나 뒷벽이다.
+  const tops = lines.map((line) => line.top).sort((p, q) => p - q);
+  const bottoms = lines.map((line) => line.bottom).sort((p, q) => p - q);
+  const shelf = {
+    top: tops[Math.floor(tops.length * 0.1)],
+    bottom: bottoms[Math.floor(bottoms.length * 0.9)],
+  };
+
+  const memo = new Map<number, boolean>();
+  const separated = (i: number, j: number) => {
+    const [a, b] = lines[i].shelfX <= lines[j].shelfX ? [i, j] : [j, i];
+    const key = a * n + b;
+    let hit = memo.get(key);
+    if (hit === undefined) {
+      const left = lines[a];
+      const right = lines[b];
+      const column = sameColumn * Math.max(left.thickness, right.thickness);
+      hit =
+        right.shelfX - left.shelfX >= column &&
+        boundaryBetween(luma, source.width, source.height, left, right, edgeRatio, shelf);
+      memo.set(key, hit);
+    }
+    return hit;
+  };
+
+  // 가까운 쌍부터 합친다. 두 묶음 사이 어느 줄 쌍에도 경계가 없어야 한다.
+  // 이웃 둘씩만 이어 붙이면 a~b, b~c 로 다른 책 a 와 c 가 한 권이 된다.
+  const owner = lines.map((_, i) => i);
+  const members = lines.map((_, i) => [i]);
+  const pairs: [number, number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const distance = Math.abs(lines[j].shelfX - lines[i].shelfX);
+      if (distance <= reach) pairs.push([distance, i, j]);
+    }
+  }
+  pairs.sort((p, q) => p[0] - q[0]);
+  for (const [, i, j] of pairs) {
+    const a = owner[i];
+    const b = owner[j];
+    if (a === b) continue;
+    const blocked = members[a].some((x) => members[b].some((y) => separated(x, y)));
+    if (blocked) continue;
+    for (const k of members[b]) owner[k] = a;
+    members[a].push(...members[b]);
+    members[b] = [];
+  }
+
+  return members
+    .filter((list) => list.length)
+    .map((list) => list.map((k) => lines[k]).sort((p, q) => p.shelfX - q.shelfX))
+    .sort((p, q) => mean(p) - mean(q));
+}
+
+function mean(group: TextLine[]): number {
+  return group.reduce((sum, line) => sum + line.shelfX, 0) / group.length;
+}
+
+function lumaOf(source: HTMLCanvasElement): Float32Array {
+  const ctx = source.getContext("2d", { willReadFrequently: true });
+  const out = new Float32Array(source.width * source.height);
+  if (!ctx) return out;
+  const pixels = ctx.getImageData(0, 0, source.width, source.height).data;
+  for (let p = 0; p < out.length; p++) {
+    out[p] = 0.299 * pixels[p * 4] + 0.587 * pixels[p * 4 + 1] + 0.114 * pixels[p * 4 + 2];
+  }
+  return out;
+}
+
+/** 경계를 잴 세로 범위. 선반에 책이 서 있는 높이 안이어야 한다. */
+export interface ShelfSpan {
+  top: number;
+  bottom: number;
+}
+
+/**
+ * 두 줄 사이 경계 봉우리의 높이 비. 벤치에서 문턱을 고를 때도 쓴다.
+ *
+ * 글자가 있는 행은 뺀다. 큰 제목의 획은 세로로 길어 경계처럼 보이고
+ * ("신비한 괴물 백과"의 제목과 옆 줄이 갈라졌다), 진짜 경계를 가리기도 한다.
+ * 책등 경계는 글자 없는 위아래까지 이어지므로 거기서 잰다.
+ */
+export function boundaryScore(
+  luma: Float32Array,
+  width: number,
+  height: number,
+  a: TextLine,
+  b: TextLine,
+  shelf: ShelfSpan,
+): number {
+  const extend = 0.5 * Math.max(a.length, b.length);
+  const top = Math.max(0, Math.floor(Math.max(shelf.top, Math.min(a.top, b.top) - extend)));
+  const bottom = Math.min(height - 1, Math.ceil(Math.min(shelf.bottom, Math.max(a.bottom, b.bottom) + extend)));
+  const pad = Math.max(a.thickness, b.thickness);
+  const hasText = (y: number, line: TextLine) => y >= line.top - pad && y <= line.bottom + pad;
+  const steps = 24;
+  const profile = new Float32Array(steps + 1);
+  let rows = 0;
+  for (let y = top; y <= bottom; y += 2) {
+    if (hasText(y, a) || hasText(y, b)) continue;
+    const left = a.cx + a.lean * (y - a.cy) + a.thickness * 0.5;
+    const right = b.cx + b.lean * (y - b.cy) - b.thickness * 0.5;
+    if (right - left < 2) continue;
+    rows++;
+    for (let k = 0; k <= steps; k++) {
+      const x = Math.round(left + ((right - left) * k) / steps);
+      if (x < 1 || x >= width - 1) continue;
+      profile[k] += Math.abs(luma[y * width + x + 1] - luma[y * width + x - 1]);
+    }
+  }
+  if (rows < 8) return 0;
+  const sorted = Array.from(profile).sort((p, q) => p - q);
+  const median = sorted[Math.floor(sorted.length / 2)] || 1e-6;
+  return sorted[sorted.length - 1] / median;
+}
+
+function boundaryBetween(
+  luma: Float32Array,
+  width: number,
+  height: number,
+  a: TextLine,
+  b: TextLine,
+  ratio: number,
+  shelf: ShelfSpan,
+): boolean {
+  // 글자 사이가 잴 수 없을 만큼 좁으면(0) 같은 책이다. 다른 책의 글자라면 적어도
+  // 두 책등의 여백만큼은 떨어져 있다. 반대로 두면 책등 위 시리즈 라벨이 제목과
+  // 갈라져 따로 한 권이 됐다.
+  return boundaryScore(luma, width, height, a, b, shelf) >= ratio;
 }
