@@ -25,22 +25,134 @@
         };
       };
 
+      // 잘라낸 책등을 눈으로 확인할 때 쓴다 (bench/crops.mjs).
+      window.__crops = async (dataUrl, options = {}) => {
+        const blob = await (await fetch(dataUrl)).blob();
+        const canvas = await toWorkingCanvas(blob);
+        const result = segmentSpines(canvas, options);
+        return result.bands.map((band) => {
+          const rotated = band.crop(90);
+          const png = rotated.canvas.toDataURL("image/png").split(",")[1];
+          const upright = band.crop(0);
+          const uprightPng = upright.canvas.toDataURL("image/png").split(",")[1];
+          return { x0: band.x0, x1: band.x1, rotated: png, upright: uprightPng };
+        });
+      };
+
+      // 이미 한 권만 잘라 둔 이미지를 분할 없이 읽는다 (bench/spine.mjs).
+      window.__spine = async (dataUrl, segment) => {
+        const { readSpineImage } = await import("/src/lib/ocr.ts");
+        const blob = await (await fetch(dataUrl)).blob();
+        return readSpineImage(await toWorkingCanvas(blob), segment ?? {});
+      };
+
       // Playwright가 호출한다. 이미지를 넣으면 인식 결과를 돌려준다.
       window.__bench = async (dataUrl, options) => {
         const blob = await (await fetch(dataUrl)).blob();
         const canvas = await toWorkingCanvas(blob);
         const started = performance.now();
-        const result = await readShelf(canvas, { langs: options.langs, ...options });
+        const result = await readShelf(canvas, options);
         return {
           elapsedMs: Math.round(performance.now() - started),
           tiltDeg: result.tiltDeg,
           usedFallback: result.usedFallback,
           readings: result.readings.map((r) => ({
+            x0: r.x0,
+            x1: r.x1,
             text: r.text,
+            raw: r.raw,
             alternatives: r.alternatives,
             confidence: r.confidence,
           })),
         };
+      };
+      // 검출 모델이 사진 전체에서 본 글자 지도를 사진 위에 겹쳐 돌려준다 (bench/detmap.mjs).
+      window.__detmap = async (dataUrl, maxSide = 1600) => {
+        const { detectText } = await import("/src/lib/ppocr.ts");
+        const blob = await (await fetch(dataUrl)).blob();
+        const canvas = await toWorkingCanvas(blob);
+        const started = performance.now();
+        const map = await detectText(canvas, maxSide);
+        const elapsedMs = Math.round(performance.now() - started);
+        const out = document.createElement("canvas");
+        out.width = Math.round(canvas.width * map.scale);
+        out.height = Math.round(canvas.height * map.scale);
+        const ctx = out.getContext("2d");
+        ctx.globalAlpha = 0.55;
+        ctx.drawImage(canvas, 0, 0, out.width, out.height);
+        ctx.globalAlpha = 1;
+        const image = ctx.getImageData(0, 0, out.width, out.height);
+        for (let y = 0; y < out.height; y++) {
+          for (let x = 0; x < out.width; x++) {
+            const v = map.data[y * map.width + x];
+            if (v > 0.3) {
+              const i = (y * out.width + x) * 4;
+              image.data[i] = 255;
+              image.data[i + 1] = Math.round(image.data[i + 1] * 0.3);
+              image.data[i + 2] = Math.round(image.data[i + 2] * 0.3);
+            }
+          }
+        }
+        ctx.putImageData(image, 0, 0);
+        return { elapsedMs, png: out.toDataURL("image/png").split(",")[1] };
+      };
+      // 검출로 찾은 글자 줄을 잘라 돌려준다 (bench/linecrops.mjs).
+      window.__lineCrops = async (dataUrl, options = {}) => {
+        const { detectText } = await import("/src/lib/ppocr.ts");
+        const { findTextLines } = await import("/src/lib/lines.ts");
+        const blob = await (await fetch(dataUrl)).blob();
+        const canvas = await toWorkingCanvas(blob);
+        const map = await detectText(canvas, options.detectSide ?? 2560);
+        const lines = findTextLines(canvas, map, options);
+        return lines.map((line) => {
+          const variant = line.crop(90);
+          const png = variant.canvas.toDataURL("image/png").split(",")[1];
+          return {
+            shelfX: Math.round(line.shelfX),
+            top: Math.round(line.top),
+            bottom: Math.round(line.bottom),
+            thickness: Math.round(line.thickness),
+            slope: Number(line.slope.toFixed(3)),
+            cells: line.cells?.length ?? 0,
+            png,
+            stacked: (() => {
+              const v = line.stacked();
+              return v ? v.canvas.toDataURL("image/png").split(",")[1] : null;
+            })(),
+          };
+        });
+      };
+      // 글자 줄을 책으로 묶은 결과를 사진 위에 칠해 돌려준다 (bench/groups.mjs).
+      window.__groups = async (dataUrl, options = {}) => {
+        const { detectText } = await import("/src/lib/ppocr.ts");
+        const { findTextLines, groupLines } = await import("/src/lib/lines.ts");
+        const blob = await (await fetch(dataUrl)).blob();
+        const canvas = await toWorkingCanvas(blob);
+        const lines = findTextLines(canvas, await detectText(canvas, 2560), options);
+        const groups = groupLines(canvas, lines, options);
+        const scale = 2000 / canvas.width;
+        const out = document.createElement("canvas");
+        out.width = 2000;
+        out.height = Math.round(canvas.height * scale);
+        const ctx = out.getContext("2d");
+        ctx.globalAlpha = 0.6;
+        ctx.drawImage(canvas, 0, 0, out.width, out.height);
+        ctx.globalAlpha = 1;
+        const colors = ["#ff2d55", "#00c7be", "#ffcc00", "#5856d6", "#34c759", "#ff9500"];
+        ctx.font = "bold 20px sans-serif";
+        groups.forEach((group, index) => {
+          ctx.strokeStyle = ctx.fillStyle = colors[index % colors.length];
+          ctx.lineWidth = 6;
+          for (const line of group) {
+            ctx.beginPath();
+            ctx.moveTo((line.cx + line.lean * (line.top - line.cy)) * scale, line.top * scale);
+            ctx.lineTo((line.cx + line.lean * (line.bottom - line.cy)) * scale, line.bottom * scale);
+            ctx.stroke();
+          }
+          const first = group[0];
+          ctx.fillText(String(index + 1), (first.cx + first.slope * (first.top - first.cy)) * scale - 8, first.top * scale - 8 - (index % 2) * 22);
+        });
+        return { lines: lines.length, groups: groups.length, png: out.toDataURL("image/png").split(",")[1] };
       };
       window.__ready = true;
     </script>

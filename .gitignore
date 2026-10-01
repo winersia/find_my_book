@@ -6,3 +6,5 @@ dist/
 public/tesseract/
 public/tessdata/
 bench/.cache/
+public/ppocr/
+public/ort/

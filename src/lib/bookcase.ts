@@ -240,6 +240,26 @@ export function booksFromReadings(readings: SpineReading[]): ShelfBook[] {
   }));
 }
 
+/**
+ * 나눠 찍은 결과를 앞 결과 뒤에 이어 붙인다.
+ *
+ * 한 칸을 두세 번에 나눠 찍으면 이음매가 조금씩 겹친다. 겹친 책은 같은 제목으로
+ * 두 번 들어가므로, 이음매 근처에서 제목이 똑같은 것만 조용히 뺀다.
+ * 제목을 못 읽은 책은 손대지 않는다. 빈 제목끼리는 같은 책인지 알 수 없다.
+ */
+export function appendBatch(existing: ShelfBook[], incoming: ShelfBook[]): ShelfBook[] {
+  const key = (book: ShelfBook) => book.title.toLowerCase().replace(/[^0-9a-z가-힣]/g, "");
+  const SEAM = 3;
+  const tail = new Set(existing.slice(-SEAM).map(key).filter((value) => value.length >= 2));
+
+  const added: ShelfBook[] = [];
+  for (const [index, book] of incoming.entries()) {
+    if (index < SEAM && tail.has(key(book))) continue;
+    added.push(book);
+  }
+  return [...existing, ...added];
+}
+
 export function blankBook(title = ""): ShelfBook {
   return {
     id: createId(),

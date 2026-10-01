@@ -1,15 +1,15 @@
 import { useCallback, useRef, useState } from "react";
-import { booksFromReadings, LOW_CONFIDENCE, type ShelfBook } from "../lib/bookcase";
+import { appendBatch, booksFromReadings, LOW_CONFIDENCE, type ShelfBook } from "../lib/bookcase";
 import { enrichBooks } from "../lib/enrich";
-import { toThumbnail } from "../lib/image";
-import { hasOcrModel, readShelf, type ScanProgress } from "../lib/ocr";
+import { maxBooksPerShot, TARGET_SPINE_PX, toThumbnail } from "../lib/image";
+import { readShelf, type ScanProgress } from "../lib/ocr";
 import { CameraCapture } from "./CameraCapture";
+import { modelLabel, WARMUP_REASON } from "./WarmupStrip";
 
 interface Props {
   label: string;
   /** 이 칸에 이미 꽂혀 있는 권수. 교체 전에 알려 주기 위해 쓴다. */
   existingCount: number;
-  langs: string;
   enrich: boolean;
   onApply: (books: ShelfBook[], photo: string) => void;
   onClose: () => void;
@@ -20,37 +20,54 @@ type Stage = "capture" | "scanning" | "review";
 /** 책등 한 권을 읽는 데 걸리는 대략의 시간. 남은 시간을 어림잡아 보여 주는 데 쓴다. */
 const SECONDS_PER_BOOK = 3;
 
+
+
 /** 칸 하나를 찍어 읽는 화면. 결과를 확인하고 고친 뒤 그 칸에 넣는다. */
-export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClose }: Props) {
+export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Props) {
   const [stage, setStage] = useState<Stage>("capture");
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [books, setBooks] = useState<ShelfBook[]>([]);
   const [dropped, setDropped] = useState<Set<string>>(new Set());
   const [photo, setPhoto] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const abort = useRef<AbortController | null>(null);
+  const [shots, setShots] = useState(0);
+  /** 이번 촬영을 앞 결과 뒤에 이어 붙일지 (나눠 찍기), 통째로 바꿀지 */
+  const [appending, setAppending] = useState(false);
+  /** 방금 사진에서 책등이 실제로 몇 px이었는지. 제목이 읽히는지를 거의 다 결정한다. */
+  const [spinePx, setSpinePx] = useState(0);
+  /** 이 사진 한 장에 담아도 됐을 권수 */
+  const [shotCapacity, setShotCapacity] = useState(0);
 
-  const firstRun = !hasOcrModel(langs);
+  const abort = useRef<AbortController | null>(null);
 
   const scan = useCallback(
     async (canvas: HTMLCanvasElement) => {
       setStage("scanning");
       setError(null);
-      setPhoto(toThumbnail(canvas));
+      // 칸 미리보기는 첫 사진을 쓴다. 나눠 찍으면 대개 첫 장이 왼쪽 끝이다.
+      setPhoto((previous) => (appending && previous ? previous : toThumbnail(canvas)));
       const controller = new AbortController();
       abort.current = controller;
 
       try {
         const result = await readShelf(canvas, {
-          langs,
           onProgress: setProgress,
           signal: controller.signal,
         });
         if (controller.signal.aborted) return;
 
+        // 책등이 실제로 몇 px인지 본다. 이것이 제목을 읽을 수 있는지를 거의 다 결정한다.
+        const widths = result.readings.map((reading) => reading.x1 - reading.x0).sort((a, b) => a - b);
+        const measured = Math.round(widths[Math.floor(widths.length / 2)] ?? 0);
+
         const recognized = booksFromReadings(result.readings);
-        setBooks(enrich ? await enrichBooks(recognized) : recognized);
-        setDropped(new Set());
+        const batch = enrich ? await enrichBooks(recognized) : recognized;
+        setBooks((previous) => (appending ? appendBatch(previous, batch) : batch));
+        setSpinePx(measured);
+        setShotCapacity(maxBooksPerShot(canvas.width));
+        setShots((previous) => (appending ? previous + 1 : 1));
+        if (!appending) setDropped(new Set());
+        setAppending(false);
         setStage("review");
       } catch (caught) {
         if (controller.signal.aborted) return;
@@ -61,7 +78,7 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
         setProgress(null);
       }
     },
-    [enrich, langs],
+    [appending, enrich],
   );
 
   const cancel = useCallback(() => {
@@ -72,6 +89,8 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
   }, []);
 
   const kept = books.filter((book) => !dropped.has(book.id));
+  // 책등이 목표 굵기에 못 미치면, 이번 사진을 몇 등분해 다시 찍어야 하는지 알려 준다.
+  const thin = spinePx > 0 && spinePx < TARGET_SPINE_PX;
 
   return (
     <section className="scan-sheet" data-testid="scan-sheet">
@@ -84,9 +103,10 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
 
       {stage === "capture" && (
         <>
-          {firstRun && (
-            <p className="notice" data-testid="first-run-notice">
-              처음 한 번만 인식 데이터 4MB를 받아요. 사진은 기기 밖으로 나가지 않습니다.
+          {/* 첫 실행 안내는 앱을 열 때 띠가 이미 했다 (WarmupStrip). 여기서 또 말하지 않는다. */}
+          {appending && (
+            <p className="notice" data-testid="append-notice">
+              {shots + 1}번째 사진 — 방금 찍은 곳 다음부터, 한두 권만 겹치게 찍어 주세요.
             </p>
           )}
           <CameraCapture onCapture={scan} disabled={false} remaining={1} autoStart />
@@ -113,8 +133,16 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
           <>
             <p className="notes" data-testid="scan-summary">
               왼쪽부터 {books.length}권
+              {shots > 1 && ` · 사진 ${shots}장`}
               {existingCount > 0 && ` · 이 칸의 ${existingCount}권과 바뀝니다`}
             </p>
+            {thin && (
+              <p className="notice" data-testid="thin-spine-notice">
+                책등이 {spinePx}px로 얇아 제목이 뭉개졌어요. <b>칸 하나만</b> 화면에 꽉 차게
+                다시 찍어 주세요. 한 장에 다 안 들어오면 [이어서 찍기]로 나눠 담을 수 있어요
+                (이 카메라는 한 장에 {shotCapacity}권까지).
+              </p>
+            )}
             <ol className="scan-preview">
               {books.map((book, order) => {
                 const isDropped = dropped.has(book.id);
@@ -168,8 +196,24 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
               >
                 {kept.length}권 이 칸에 넣기
               </button>
-              <button type="button" onClick={() => setStage("capture")}>
-                다시 찍기
+              <button
+                type="button"
+                onClick={() => {
+                  setAppending(true);
+                  setStage("capture");
+                }}
+                data-testid="append-scan"
+              >
+                이어서 찍기
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAppending(false);
+                  setStage("capture");
+                }}
+              >
+                처음부터 다시
               </button>
             </div>
           </>
@@ -178,28 +222,59 @@ export function ScanSheet({ label, existingCount, langs, enrich, onApply, onClos
   );
 }
 
-/** 오래 걸리는 구간. 어디까지 왔는지, 얼마나 남았는지, 멈출 수 있는지를 보여 준다. */
+/**
+ * 오래 걸리는 구간. 어디까지 왔는지, 얼마나 남았는지, 멈출 수 있는지를 보여 준다.
+ *
+ * 구간마다 잴 수 있는 것이 다르다. 모델 내려받기는 바이트로, 책등 읽기는 권수로 잰다.
+ * 둘 다 숫자가 움직이는 막대를 보여 준다. 잴 것이 없는 구간만 흐르는 막대다.
+ * 멈춘 것처럼 보이는 화면에서 사람이 나간다.
+ */
 function Scanning({ progress, onCancel }: { progress: ScanProgress | null; onCancel: () => void }) {
-  const preparing = !progress || progress.total <= 1;
-  const ratio = progress && progress.total > 0 ? progress.done / progress.total : 0;
-  const percent = Math.round(Math.min(1, ratio) * 100);
-  const remaining =
-    progress && progress.total > 1 ? Math.max(1, Math.round((progress.total - progress.done) * SECONDS_PER_BOOK)) : 0;
+  const stop = (
+    <div className="scan-actions">
+      <button type="button" onClick={onCancel} data-testid="cancel-scan">
+        그만두기
+      </button>
+    </div>
+  );
+
+  // 앱을 열 때 미리 받아 두므로 여기까지 오는 일은 드물다. 데이터 절약 모드이거나
+  // 첫 화면을 금방 지나쳤을 때만 온다. 그때도 숫자는 보여야 한다.
+  if (progress?.kind === "model") {
+    const percent = Math.round(Math.min(1, progress.done / progress.total) * 100);
+    return (
+      <div className="progress" role="status" data-testid="scanning">
+        <p className="progress-line">
+          <strong data-testid="scan-model-label">
+            {modelLabel(progress.done, progress.total, percent >= 100)}
+          </strong>
+          <span className="remaining">{percent}%</span>
+        </p>
+        <div className="bar">
+          <span style={{ width: `${percent}%` }} />
+        </div>
+        <p className="notice">{WARMUP_REASON}</p>
+        {stop}
+      </div>
+    );
+  }
+
+  const counting = progress?.kind === "read" && progress.total > 1;
+  const percent = counting ? Math.round(Math.min(1, progress.done / progress.total) * 100) : 0;
+  const remaining = counting
+    ? Math.max(1, Math.round((progress.total - progress.done) * SECONDS_PER_BOOK))
+    : 0;
 
   return (
     <div className="progress" role="status" data-testid="scanning">
       <p className="progress-line">
-        <strong>{preparing ? "읽을 준비를 하고 있어요" : `책등을 읽는 중 ${progress.done}/${progress.total}`}</strong>
+        <strong>{counting ? `책등을 읽는 중 ${progress.done}/${progress.total}` : "책등을 찾는 중"}</strong>
         {remaining > 0 && <span className="remaining">약 {remaining}초 남음</span>}
       </p>
       <div className="bar">
-        <span className={preparing ? "indeterminate" : ""} style={{ width: preparing ? "100%" : `${percent}%` }} />
+        <span className={counting ? "" : "indeterminate"} style={{ width: counting ? `${percent}%` : "100%" }} />
       </div>
-      <div className="scan-actions">
-        <button type="button" onClick={onCancel} data-testid="cancel-scan">
-          그만두기
-        </button>
-      </div>
+      {stop}
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { BookcaseSetup } from "./components/BookcaseSetup";
 import { BookcaseView } from "./components/BookcaseView";
 import { ScanSheet } from "./components/ScanSheet";
 import { SlotPanel } from "./components/SlotPanel";
+import { WarmupStrip } from "./components/WarmupStrip";
 import {
   DEFAULT_COLUMNS,
   DEFAULT_ROWS,
@@ -25,11 +26,11 @@ import {
   type Bookcase,
   type ShelfBook,
 } from "./lib/bookcase";
+import { warmUpWhenIdle } from "./lib/warmup";
 
 const SETTINGS_KEY = "find-my-book:settings:v1";
 
 interface Settings {
-  langs: "kor+eng" | "eng";
   enrich: boolean;
 }
 
@@ -44,7 +45,7 @@ export default function App() {
   const [selected, setSelected] = useState<number | null>(null);
   const [scanning, setScanning] = useState(false);
   const [toast, setToast] = useState<{ message: string; undo?: () => void } | null>(null);
-  const [settings, setSettings] = useState<Settings>({ langs: "kor+eng", enrich: true });
+  const [settings, setSettings] = useState<Settings>({ enrich: true });
 
   useEffect(() => {
     const stored = loadBookcases();
@@ -59,6 +60,9 @@ export default function App() {
     } catch {
       // 설정을 못 읽어도 기본값으로 동작한다.
     }
+    // 셔터를 누른 뒤에 17MB를 받기 시작하면 사용자는 멈춘 화면을 본다.
+    // 첫 화면을 그린 뒤 뒤에서 받아 둔다 (src/lib/warmup.ts).
+    warmUpWhenIdle();
   }, []);
 
   useEffect(() => {
@@ -178,6 +182,7 @@ export default function App() {
     return (
       <div className="app">
         <Header title="책장 스캐너" />
+        <WarmupStrip />
         <main>
           <BookcaseSetup
             existing={editing}
@@ -223,6 +228,7 @@ export default function App() {
           </select>
         )}
       </Header>
+      <WarmupStrip />
 
       <main>
         <BookcaseView
@@ -306,16 +312,7 @@ export default function App() {
           </div>
 
           <div className="settings">
-            <label>
-              <span>인식 언어</span>
-              <select
-                value={settings.langs}
-                onChange={(event) => updateSettings({ langs: event.target.value as Settings["langs"] })}
-              >
-                <option value="kor+eng">한국어 + 영어</option>
-                <option value="eng">영어만 (빠름)</option>
-              </select>
-            </label>
+            {/* 인식 언어 고르기는 없앴다. 지금 모델 하나가 한글과 영문을 같이 읽는다. */}
             <label className="checkbox">
               <input
                 type="checkbox"
@@ -339,7 +336,6 @@ export default function App() {
           <ScanSheet
             label={slotLabel(current, selected)}
             existingCount={current.slots[selected].books.length}
-            langs={settings.langs}
             enrich={settings.enrich}
             onApply={applyScan}
             onClose={() => setScanning(false)}
