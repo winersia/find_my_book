@@ -47,10 +47,6 @@ const LINE_HEIGHT = 48;
 const TEXT_PROBABILITY = 0.3;
 /** 가장 큰 글자 덩어리 대비 이 비율은 돼야 제목으로 본다 */
 const TITLE_HEIGHT_RATIO = 0.7;
-/** 사진 전체 검출을 이 높이(검출 크기 기준 px)의 띠로 나눠 돌린다 */
-const DETECT_BAND = 640;
-/** 띠 위아래로 더 읽어 둘 높이. 32의 배수여야 한다 */
-const DETECT_OVERLAP = 64;
 /** 모델을 받는 데 이만큼 걸리면 실패로 본다 */
 const MODEL_TIMEOUT_MS = 120_000;
 
@@ -150,6 +146,9 @@ export async function loadModels(): Promise<void> {
     // wasm 런타임은 앱과 같이 배포한다. CDN에 기대면 오프라인에서 못 쓴다.
     ort.env.wasm.wasmPaths = `${base}ort/`;
     ort.env.wasm.numThreads = 1;
+    // 추론을 워커에서 돌린다. 메인 스레드에서 돌리면 사진 전체 검출 한 번에 휴대폰에서
+    // 50초 넘게 화면이 멈췄다 (CPU 4배 감속 기준). 워커로 옮기자 가장 긴 멈춤이 2.5초.
+    ort.env.wasm.proxy = true;
 
     // 인식 모델이 12.8MB로 훨씬 크다. 진행률은 두 개를 합쳐 바이트로 센다.
     const recBytes = await fetchWithProgress(`${base}ppocr/rec.onnx`, (bytes) => report(bytes));
@@ -411,28 +410,15 @@ export async function detectText(canvas: HTMLCanvasElement, maxSide = 1600): Pro
   small.height = 0;
   const mean = [0.485, 0.456, 0.406];
   const deviation = [0.229, 0.224, 0.225];
-
-  // 가로 띠로 나눠 돌리고 띠 사이에 화면을 그리게 한다. 한 번에 돌리면 휴대폰에서
-  // 50초 넘게 화면이 멈췄다. 띠 경계에서 글자가 끊기지 않게 위아래를 겹쳐 돌리고
-  // 가운데만 이어 붙인다. 검출 모델은 합성곱이라 둘레만 넉넉하면 결과가 같다.
-  const out = new Float32Array(width * height);
-  const bands = Math.max(1, Math.round(height / DETECT_BAND));
-  const step = Math.ceil(height / bands / 32) * 32;
-  for (let top = 0; top < height; top += step) {
-    const bottom = Math.min(height, top + step);
-    const from = Math.max(0, top - DETECT_OVERLAP);
-    const to = Math.min(height, bottom + DETECT_OVERLAP);
-    const rows = to - from;
-    const plane = width * rows;
-    const input = new Float32Array(3 * plane);
-    for (let at = 0; at < plane; at++) {
-      const source = (from * width + at) * 4;
-      for (let c = 0; c < 3; c++) input[c * plane + at] = (pixels[source + c] / 255 - mean[c]) / deviation[c];
-    }
-    const result = await det.run({ [det.inputNames[0]]: new ort!.Tensor("float32", input, [1, 3, rows, width]) });
-    const map = result[det.outputNames[0]].data as Float32Array;
-    out.set(map.subarray((top - from) * width, (bottom - from) * width), top * width);
-    if (bottom < height) await yieldToPaint();
+  const plane = width * height;
+  const input = new Float32Array(3 * plane);
+  for (let at = 0; at < plane; at++) {
+    for (let c = 0; c < 3; c++) input[c * plane + at] = (pixels[at * 4 + c] / 255 - mean[c]) / deviation[c];
   }
-  return { data: out, width, height, scale };
+  // 사진을 띠로 나눠 돌리면 결과가 원래와 달라진다. 겹침을 256px 까지 늘려도 글자 화소의
+  // 0.2% 가 뒤집혔다. 이 모델은 사진 전체의 평균을 보는 층이 있어서다. 그래서 한 번에 돌리고,
+  // 화면이 멈추지 않게 하는 일은 워커(ort.env.wasm.proxy)에 맡긴다.
+  await yieldToPaint();
+  const result = await det.run({ [det.inputNames[0]]: new ort!.Tensor("float32", input, [1, 3, height, width]) });
+  return { data: result[det.outputNames[0]].data as Float32Array, width, height, scale };
 }
