@@ -350,11 +350,11 @@ async function titleSpan(canvas: HTMLCanvasElement): Promise<HTMLCanvasElement |
 }
 
 /** 글자 띠 하나를 읽는다. 제목 구간을 먼저 추려 낸 뒤 인식한다. */
-export async function readLine(canvas: HTMLCanvasElement): Promise<SpineText> {
+export async function readLine(canvas: HTMLCanvasElement, { trim = true }: { trim?: boolean } = {}): Promise<SpineText> {
   await loadModels();
   if (!rec) return { text: "", confidence: 0 };
 
-  const trimmed = (await titleSpan(canvas)) ?? canvas;
+  const trimmed = (trim ? await titleSpan(canvas) : null) ?? canvas;
   const output = await rec.run({ [rec.inputNames[0]]: toLineTensor(trimmed) });
   const tensor = output[rec.outputNames[0]];
   const [, steps, classes] = tensor.dims as number[];

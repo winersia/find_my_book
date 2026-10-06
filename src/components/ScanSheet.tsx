@@ -17,8 +17,13 @@ interface Props {
 
 type Stage = "capture" | "scanning" | "review";
 
-/** 책등 한 권을 읽는 데 걸리는 대략의 시간. 남은 시간을 어림잡아 보여 주는 데 쓴다. */
-const SECONDS_PER_BOOK = 3;
+/**
+ * 남은 시간은 실제로 읽은 속도로 어림잡는다. 이만큼은 읽어 봐야 속도를 믿을 수 있다.
+ *
+ * 예전에는 한 줄에 3초로 박아 두었는데, 기기마다 열 배 가까이 차이가 나서 휴대폰에서는
+ * "약 252초 남음"처럼 실제의 두 배를 넘게 말했다.
+ */
+const ESTIMATE_AFTER = 3;
 
 
 
@@ -39,6 +44,11 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
   const [shotCapacity, setShotCapacity] = useState(0);
 
   const abort = useRef<AbortController | null>(null);
+  /** 사용자가 손으로 고친 책. 뒤늦게 온 책 정보가 고친 제목을 덮으면 안 된다. */
+  const edited = useRef<Set<string>>(new Set());
+  /** 책 정보 찾기 차례. 다시 찍거나 닫으면 늦게 온 답을 버린다. */
+  const enrichRun = useRef(0);
+  const [enriching, setEnriching] = useState(false);
 
   const scan = useCallback(
     async (canvas: HTMLCanvasElement) => {
@@ -60,8 +70,7 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
         const widths = result.readings.map((reading) => reading.x1 - reading.x0).sort((a, b) => a - b);
         const measured = Math.round(widths[Math.floor(widths.length / 2)] ?? 0);
 
-        const recognized = booksFromReadings(result.readings);
-        const batch = enrich ? await enrichBooks(recognized) : recognized;
+        const batch = booksFromReadings(result.readings);
         setBooks((previous) => (appending ? appendBatch(previous, batch) : batch));
         setSpinePx(measured);
         setShotCapacity(maxBooksPerShot(canvas.width));
@@ -69,6 +78,22 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
         if (!appending) setDropped(new Set());
         setAppending(false);
         setStage("review");
+
+        // 책 정보(표지·ISBN)는 결과를 보여 준 뒤에 찾는다. 기다리게 하지 않는다.
+        // 예전에는 이걸 다 찾은 뒤에야 결과가 떴다. 한국 그림책은 대부분 없어서 헛걸음인데,
+        // 40권이면 40초 가까이 "84/84" 화면에 멈춰 있었다.
+        if (enrich && batch.length) {
+          const run = ++enrichRun.current;
+          setEnriching(true);
+          void enrichBooks(batch, {
+            onMatch: (found) => {
+              if (run !== enrichRun.current || edited.current.has(found.id)) return;
+              setBooks((previous) => previous.map((book) => (book.id === found.id ? found : book)));
+            },
+          }).finally(() => {
+            if (run === enrichRun.current) setEnriching(false);
+          });
+        }
       } catch (caught) {
         if (controller.signal.aborted) return;
         setError(caught instanceof Error ? caught.message : "인식에 실패했습니다.");
@@ -82,6 +107,8 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
   );
 
   const cancel = useCallback(() => {
+    enrichRun.current++;
+    setEnriching(false);
     abort.current?.abort();
     abort.current = null;
     setProgress(null);
@@ -93,10 +120,18 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
   const thin = spinePx > 0 && spinePx < TARGET_SPINE_PX;
 
   return (
-    <section className="scan-sheet" data-testid="scan-sheet">
+    <section className="scan-sheet" data-testid="scan-sheet" data-enriching={enriching ? "true" : undefined}>
       <header className="scan-header">
         <h2>{label} 채우기</h2>
-        <button type="button" onClick={stage === "scanning" ? cancel : onClose} aria-label="닫기">
+        <button
+          type="button"
+          onClick={() => {
+            enrichRun.current++;
+            if (stage === "scanning") cancel();
+            else onClose();
+          }}
+          aria-label="닫기"
+        >
           ×
         </button>
       </header>
@@ -135,6 +170,7 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
               왼쪽부터 {books.length}권
               {shots > 1 && ` · 사진 ${shots}장`}
               {existingCount > 0 && ` · 이 칸의 ${existingCount}권과 바뀝니다`}
+              {enriching && " · 책 정보 찾는 중"}
             </p>
             {thin && (
               <p className="notice" data-testid="thin-spine-notice">
@@ -155,13 +191,14 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
                       value={book.title}
                       placeholder="제목 미상 — 직접 적어 주세요"
                       disabled={isDropped}
-                      onChange={(event) =>
+                      onChange={(event) => {
+                        edited.current.add(book.id);
                         setBooks((previous) =>
                           previous.map((item) =>
                             item.id === book.id ? { ...item, title: event.target.value } : item,
                           ),
-                        )
-                      }
+                        );
+                      }}
                       aria-label={`${order + 1}번째 책 제목`}
                     />
                     {book.confidence < LOW_CONFIDENCE && !isDropped && (
@@ -230,6 +267,11 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
  * 멈춘 것처럼 보이는 화면에서 사람이 나간다.
  */
 function Scanning({ progress, onCancel }: { progress: ScanProgress | null; onCancel: () => void }) {
+  // 읽기를 시작한 때. 진행률이 0 으로 돌아오면(다음 사진) 새로 잰다.
+  const readStart = useRef<{ at: number; total: number } | null>(null);
+  if (progress?.kind === "read" && (progress.done === 0 || readStart.current?.total !== progress.total)) {
+    readStart.current = { at: performance.now(), total: progress.total };
+  }
   const stop = (
     <div className="scan-actions">
       <button type="button" onClick={onCancel} data-testid="cancel-scan">
@@ -261,15 +303,21 @@ function Scanning({ progress, onCancel }: { progress: ScanProgress | null; onCan
 
   const counting = progress?.kind === "read" && progress.total > 1;
   const percent = counting ? Math.round(Math.min(1, progress.done / progress.total) * 100) : 0;
-  const remaining = counting
-    ? Math.max(1, Math.round((progress.total - progress.done) * SECONDS_PER_BOOK))
-    : 0;
+  const elapsed = readStart.current ? (performance.now() - readStart.current.at) / 1000 : 0;
+  const remaining =
+    counting && progress.done >= ESTIMATE_AFTER
+      ? Math.max(1, Math.round((elapsed / progress.done) * (progress.total - progress.done)))
+      : 0;
 
   return (
     <div className="progress" role="status" data-testid="scanning">
       <p className="progress-line">
-        <strong>{counting ? `책등을 읽는 중 ${progress.done}/${progress.total}` : "책등을 찾는 중"}</strong>
-        {remaining > 0 && <span className="remaining">약 {remaining}초 남음</span>}
+        <strong>{counting ? `책등을 읽는 중 ${progress.done}/${progress.total}` : (progress?.phase ?? "책등을 찾는 중")}</strong>
+        {remaining > 0 && (
+          <span className="remaining">
+            약 {remaining >= 90 ? `${Math.round(remaining / 60)}분` : `${remaining}초`} 남음
+          </span>
+        )}
       </p>
       <div className="bar">
         <span className={counting ? "" : "indeterminate"} style={{ width: counting ? `${percent}%` : "100%" }} />
