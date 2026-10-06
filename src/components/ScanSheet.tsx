@@ -288,6 +288,7 @@ function Scanning({ progress, onCancel }: { progress: ScanProgress | null; onCan
       <div className="progress" role="status" data-testid="scanning">
         <p className="progress-line">
           <strong data-testid="scan-model-label">
+            <span className="spinner small" data-busy-indicator="scan" aria-hidden="true" />
             {modelLabel(progress.done, progress.total, percent >= 100)}
           </strong>
           <span className="remaining">{percent}%</span>
@@ -312,7 +313,11 @@ function Scanning({ progress, onCancel }: { progress: ScanProgress | null; onCan
   return (
     <div className="progress" role="status" data-testid="scanning">
       <p className="progress-line">
-        <strong>{counting ? `책등을 읽는 중 ${progress.done}/${progress.total}` : (progress?.phase ?? "책등을 찾는 중")}</strong>
+        {/* 인식 중 계산이 몇 초씩 화면을 붙잡는다. 이 스피너는 그동안에도 돈다 (busy.ts). */}
+        <strong>
+          <span className="spinner small" data-busy-indicator="scan" aria-hidden="true" />
+          {counting ? `책등을 읽는 중 ${progress.done}/${progress.total}` : (progress?.phase ?? "책등을 찾는 중")}
+        </strong>
         {remaining > 0 && (
           <span className="remaining">
             약 {remaining >= 90 ? `${Math.round(remaining / 60)}분` : `${remaining}초`} 남음

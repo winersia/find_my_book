@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BookcaseSetup } from "./components/BookcaseSetup";
 import { BookcaseView } from "./components/BookcaseView";
+import { BusyOverlay } from "./components/BusyOverlay";
 import { ScanSheet } from "./components/ScanSheet";
 import { SlotPanel } from "./components/SlotPanel";
 import { WarmupStrip } from "./components/WarmupStrip";
@@ -201,6 +202,7 @@ export default function App() {
           />
         </main>
         {toast && <Toast message={toast.message} onUndo={toast.undo} />}
+        <BusyOverlay />
       </div>
     );
   }
@@ -344,6 +346,7 @@ export default function App() {
       )}
 
       {toast && <Toast message={toast.message} onUndo={toast.undo} />}
+      <BusyOverlay />
     </div>
   );
 }

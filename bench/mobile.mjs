@@ -5,14 +5,20 @@
  * 화면이 멈춘 구간은 requestAnimationFrame 사이 간격으로 잰다. 메인 스레드가 막히면
  * 그 사이에 프레임이 하나도 그려지지 않는다.
  *
- *   node bench/mobile.mjs <사진.jpg> [앱 주소] [CPU 배율, 기본 4]
+ *   node bench/mobile.mjs <사진.jpg> [앱 주소] [CPU 배율, 기본 4] [--gallery]
+ *
+ * --gallery 면 셔터 대신 "사진 고르기"로 같은 사진을 넣는다.
+ * 멈춘 구간마다 그 직전에 로딩 표시([data-busy-indicator])가 떠 있었는지도 본다.
+ * 로딩 표시는 CSS 애니메이션이라 멈춘 동안에도 돈다. 표시 없이 멈추면 사용자는 앱이 죽은 줄 안다.
  * 사진은 저장소 밖에 두고, 만든 영상은 bench/.cache 에 남는다.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright";
 
-const [photo, url = "http://localhost:4173/", rate = "4"] = process.argv.slice(2);
+const positional = process.argv.slice(2).filter((arg) => !arg.startsWith("--"));
+const gallery = process.argv.includes("--gallery");
+const [photo, url = "http://localhost:4173/", rate = "4"] = positional;
 const CACHE = path.resolve("bench/.cache");
 fs.mkdirSync(CACHE, { recursive: true });
 const proxy = process.env.HTTPS_PROXY
@@ -82,9 +88,12 @@ page.on("crash", () => console.log("[탭이 죽음]"));
 await page.addInitScript(() => {
   window.__gaps = [];
   let last = performance.now();
+  let shown = false;
   const tick = (now) => {
-    if (now - last > 500) window.__gaps.push({ at: Math.round(last), ms: Math.round(now - last) });
+    if (now - last > 500) window.__gaps.push({ at: Math.round(last), ms: Math.round(now - last), shown });
     last = now;
+    // 이 프레임에 로딩 표시가 화면에 있었는지. 다음 프레임까지 멈추면 이 값이 남는다.
+    shown = [...document.querySelectorAll("[data-busy-indicator]")].some((el) => el.getClientRects().length > 0);
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
@@ -111,16 +120,21 @@ const camera = await page.$eval("video", (v) => `${v.videoWidth}x${v.videoHeight
 const cdp = await context.newCDPSession(page);
 await cdp.send("Emulation.setCPUThrottlingRate", { rate: Number(rate) });
 const shotAt = await page.evaluate(() => Math.round(performance.now()));
-// 클릭이 끝나기를 기다리지 않는다. 셔터 뒤 메인 스레드가 막히면 클릭 확인부터 늦어진다.
-await page.evaluate(() => {
-  setTimeout(() => document.querySelector('[data-testid="scan-sheet"] button.shutter').click(), 0);
-});
+if (gallery) {
+  // 갤러리에서 고른 것처럼 파일을 넣는다. 사진 원본(JPEG)이 그대로 들어간다.
+  await page.setInputFiles('[data-testid="scan-sheet"] input[type="file"]', photo);
+} else {
+  // 클릭이 끝나기를 기다리지 않는다. 셔터 뒤 메인 스레드가 막히면 클릭 확인부터 늦어진다.
+  await page.evaluate(() => {
+    setTimeout(() => document.querySelector('[data-testid="scan-sheet"] button.shutter').click(), 0);
+  });
+}
 await page.waitForSelector('[data-testid="apply-scan"], [data-testid="scan-sheet"] .error, .notes', { timeout: 900000 });
 await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
 
 const { gaps, marks } = await page.evaluate(() => ({ gaps: window.__gaps, marks: window.__marks }));
 const count = await page.$$eval(".scan-preview li", (els) => els.length);
-console.log(`카메라 ${camera} · CPU ${rate}배 느리게`);
+console.log(`${gallery ? "갤러리 사진" : `카메라 ${camera}`} · CPU ${rate}배 느리게`);
 console.log("화면에 나타난 상태 (셔터 기준 초):");
 for (const m of marks.filter((m) => m.at >= shotAt)) console.log(`  +${((m.at - shotAt) / 1000).toFixed(1)}s  ${m.state}`);
 const after = gaps.filter((g) => g.at >= shotAt - 100);
@@ -129,5 +143,8 @@ console.log(`화면이 멈춘 구간: 1초 넘는 것 ${after.filter((g) => g.ms
 for (const g of after.filter((g) => g.ms > 3000)) {
   console.log(`  +${((g.at - shotAt) / 1000).toFixed(1)}s 부터 ${(g.ms / 1000).toFixed(1)}초`);
 }
+const bare = after.filter((g) => g.ms > 500 && !g.shown);
+console.log(`로딩 표시 없이 0.5초 넘게 멈춘 구간: ${bare.length}번`);
+for (const g of bare) console.log(`  +${((g.at - shotAt) / 1000).toFixed(1)}s 부터 ${(g.ms / 1000).toFixed(1)}초`);
 console.log(`결과 ${count}권`);
 await browser.close();

@@ -9,9 +9,41 @@
     <meta name="theme-color" content="#161511" />
     <meta name="description" content="책장 사진을 찍으면 책 제목을 인식해 목록으로 만들어 줍니다." />
     <title>책장 스캐너</title>
+    <!--
+      앱 코드를 받는 동안 보일 화면. 이게 없으면 느린 망에서 빈 화면이 몇 초 간다.
+      스타일 파일은 앱 코드가 불러오므로 여기서는 쓸 수 없다. 필요한 것만 직접 적는다.
+      React 가 뜨면 #root 안을 통째로 바꾼다.
+    -->
+    <style>
+      html, body { margin: 0; background: #14130f; }
+      .boot {
+        min-height: 100vh;
+        display: grid;
+        place-content: center;
+        justify-items: center;
+        gap: 14px;
+        color: #f2ede1;
+        font: 15px/1.4 system-ui, -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+      }
+      .boot-spinner {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        border: 3px solid rgba(255, 255, 255, 0.14);
+        border-top-color: #d9a441;
+        animation: boot-spin 0.8s linear infinite;
+        will-change: transform;
+      }
+      @keyframes boot-spin { to { transform: rotate(360deg); } }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="boot" role="status" data-busy-indicator="boot">
+        <span class="boot-spinner" aria-hidden="true"></span>
+        <span>책장 스캐너를 여는 중</span>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
