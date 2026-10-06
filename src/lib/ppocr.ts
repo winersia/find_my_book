@@ -12,6 +12,7 @@
  *    글자만 보고는 못 가른다. 크기로 갈라야 하는데 화소 밝기로는 무늬와 구별이 안 됐다.
  */
 import type * as Ort from "onnxruntime-web";
+import { yieldToPaint } from "./yield";
 
 /**
  * onnxruntime-web 은 실행할 때 가져온다.
@@ -145,6 +146,9 @@ export async function loadModels(): Promise<void> {
     // wasm 런타임은 앱과 같이 배포한다. CDN에 기대면 오프라인에서 못 쓴다.
     ort.env.wasm.wasmPaths = `${base}ort/`;
     ort.env.wasm.numThreads = 1;
+    // 추론을 워커에서 돌린다. 메인 스레드에서 돌리면 사진 전체 검출 한 번에 휴대폰에서
+    // 50초 넘게 화면이 멈췄다 (CPU 4배 감속 기준). 워커로 옮기자 가장 긴 멈춤이 2.5초.
+    ort.env.wasm.proxy = true;
 
     // 인식 모델이 12.8MB로 훨씬 크다. 진행률은 두 개를 합쳐 바이트로 센다.
     const recBytes = await fetchWithProgress(`${base}ppocr/rec.onnx`, (bytes) => report(bytes));
@@ -350,11 +354,11 @@ async function titleSpan(canvas: HTMLCanvasElement): Promise<HTMLCanvasElement |
 }
 
 /** 글자 띠 하나를 읽는다. 제목 구간을 먼저 추려 낸 뒤 인식한다. */
-export async function readLine(canvas: HTMLCanvasElement): Promise<SpineText> {
+export async function readLine(canvas: HTMLCanvasElement, { trim = true }: { trim?: boolean } = {}): Promise<SpineText> {
   await loadModels();
   if (!rec) return { text: "", confidence: 0 };
 
-  const trimmed = (await titleSpan(canvas)) ?? canvas;
+  const trimmed = (trim ? await titleSpan(canvas) : null) ?? canvas;
   const output = await rec.run({ [rec.inputNames[0]]: toLineTensor(trimmed) });
   const tensor = output[rec.outputNames[0]];
   const [, steps, classes] = tensor.dims as number[];
@@ -411,6 +415,10 @@ export async function detectText(canvas: HTMLCanvasElement, maxSide = 1600): Pro
   for (let at = 0; at < plane; at++) {
     for (let c = 0; c < 3; c++) input[c * plane + at] = (pixels[at * 4 + c] / 255 - mean[c]) / deviation[c];
   }
+  // 사진을 띠로 나눠 돌리면 결과가 원래와 달라진다. 겹침을 256px 까지 늘려도 글자 화소의
+  // 0.2% 가 뒤집혔다. 이 모델은 사진 전체의 평균을 보는 층이 있어서다. 그래서 한 번에 돌리고,
+  // 화면이 멈추지 않게 하는 일은 워커(ort.env.wasm.proxy)에 맡긴다.
+  await yieldToPaint();
   const result = await det.run({ [det.inputNames[0]]: new ort!.Tensor("float32", input, [1, 3, height, width]) });
   return { data: result[det.outputNames[0]].data as Float32Array, width, height, scale };
 }

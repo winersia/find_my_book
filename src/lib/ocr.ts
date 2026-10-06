@@ -7,6 +7,7 @@ import {
   type SpineVariant,
 } from "./segment";
 import { findTextLines, groupLines, type GroupOptions, type LineOptions, type TextLine } from "./lines";
+import { yieldToPaint } from "./yield";
 import { detectText, hasModels, loadModels, readLine, releaseModels, watchModels } from "./ppocr";
 
 /** 책등 한 권을 읽은 결과 */
@@ -52,7 +53,7 @@ export interface ReadShelfOptions {
    */
   engine?: "lines" | "bands";
   /** 글자 줄 찾기 설정 (벤치용) */
-  lines?: LineOptions & GroupOptions & { detectSide?: number };
+  lines?: LineOptions & GroupOptions & { detectSide?: number; trim?: boolean };
 }
 
 export interface ShelfResult {
@@ -101,11 +102,18 @@ export async function readShelf(
     unwatch();
   }
   onProgress?.({ kind: "spine", phase: "책등 찾는 중", done: 0, total: 1 });
+  await yieldToPaint();
+  if (signal?.aborted) return { readings: [], tiltDeg: 0, usedFallback: false };
 
   const { bands, tiltDeg } = segmentSpines(image, segment);
 
   if (engine === "lines") {
+    onProgress?.({ kind: "spine", phase: "사진에서 글자 찾는 중", done: 0, total: 1 });
+    await yieldToPaint();
+    if (signal?.aborted) return { readings: [], tiltDeg, usedFallback: false };
     const map = await detectText(image, lineOptions?.detectSide ?? DETECT_SIDE);
+    await yieldToPaint();
+    if (signal?.aborted) return { readings: [], tiltDeg, usedFallback: false };
     const found = findTextLines(image, map, lineOptions);
     if (found.length >= 2) {
       const readings = await readLines(image, found, bands, onProgress, signal, lineOptions);
@@ -134,6 +142,8 @@ export async function readShelf(
   for (const [index, band] of bands.entries()) {
     if (signal?.aborted) break;
     onProgress?.({ kind: "read", phase: "책등 읽는 중", done: index, total: bands.length });
+    await yieldToPaint();
+    if (signal?.aborted) break;
 
     // 흑백 반전도 같이 읽어 보면 짙은 바탕에 흰 글자인 책등이 살아나지만, 전체로 재 보면
     // 합계가 그대로고 시간만 두 배가 됐다. 그래서 기본으로는 켜지 않는다 (crop API 에는 남아 있다).
@@ -211,8 +221,9 @@ async function readLines(
   bands: SpineBand[],
   onProgress: ((progress: ScanProgress) => void) | undefined,
   signal: AbortSignal | undefined,
-  groupOptions: GroupOptions = {},
+  groupOptions: GroupOptions & { trim?: boolean } = {},
 ): Promise<SpineReading[]> {
+  const trim = groupOptions.trim ?? true;
   const read: { line: TextLine; best: Candidate; candidates: Candidate[] }[] = [];
   const votes: number[] = [];
   let settled: number | null = null;
@@ -221,10 +232,12 @@ async function readLines(
   for (const [index, line] of lines.entries()) {
     if (signal?.aborted) break;
     onProgress?.({ kind: "read", phase: "책등 읽는 중", done: index, total: lines.length });
+    await yieldToPaint();
+    if (signal?.aborted) break;
     const first = settled !== null ? wanted.filter((shot) => shot.deg === settled) : wanted;
-    let candidates = await readShots(line, first);
+    let candidates = await readShots(line, first, trim);
     if ((candidates[0]?.score ?? 0) < WEAK_SCORE && first.length < wanted.length) {
-      candidates = [...candidates, ...(await readShots(line, wanted.filter((shot) => shot.deg !== settled)))];
+      candidates = [...candidates, ...(await readShots(line, wanted.filter((shot) => shot.deg !== settled), trim))];
       candidates.sort((a, b) => b.score - a.score);
     }
     // 세로로 쌓은 글자일 수 있다. 음절을 세워 늘어놓은 것도 읽어 점수로 고른다.
@@ -233,7 +246,7 @@ async function readLines(
     if (restacked) {
       let stackedRead: Candidate;
       try {
-        stackedRead = { ...(await readVariant(restacked)), deg: 0 };
+        stackedRead = { ...(await readVariant(restacked, trim)), deg: 0 };
       } finally {
         releaseVariants([restacked]);
       }
@@ -252,6 +265,7 @@ async function readLines(
     read.push({ line, best, candidates });
   }
   onProgress?.({ kind: "read", phase: "책등 읽는 중", done: lines.length, total: lines.length });
+  await yieldToPaint();
 
   // 한 권으로 묶기. 두 줄 사이에 책등 경계가 없으면 같은 책이다 (lines.ts).
   const byLine = new Map(read.map((item) => [item.line, item]));
@@ -381,12 +395,12 @@ interface Candidate {
 }
 
 /** 한 책등을 주어진 방법들로 읽는다. 크롭은 읽자마자 버린다. */
-async function readShots(band: Pick<SpineBand, "crop">, shots: Shot[]): Promise<Candidate[]> {
+async function readShots(band: Pick<SpineBand, "crop">, shots: Shot[], trim = true): Promise<Candidate[]> {
   const results: Candidate[] = [];
   for (const { deg, invert } of shots) {
     const variant = band.crop(deg, invert);
     try {
-      results.push(await readVariant(variant));
+      results.push(await readVariant(variant, trim));
     } finally {
       releaseVariants([variant]);
     }
@@ -401,8 +415,8 @@ function majority(values: number[]): number {
   return [...tally.entries()].sort((a, b) => b[1] - a[1])[0][0];
 }
 
-async function readVariant(variant: SpineVariant): Promise<Candidate> {
-  const read = await readLine(variant.canvas);
+async function readVariant(variant: SpineVariant, trim = true): Promise<Candidate> {
+  const read = await readLine(variant.canvas, { trim });
   return {
     deg: variant.deg,
     text: cleanText(read.text),
@@ -423,6 +437,8 @@ async function readWholeImage(
   for (const [index, deg] of [0, 90, -90].entries()) {
     if (signal?.aborted) break;
     onProgress?.({ kind: "read", phase: "사진 전체를 읽는 중", done: index, total: 3 });
+    await yieldToPaint();
+    if (signal?.aborted) break;
     const variant = band.crop(deg);
     try {
       const candidate = await readVariant(variant);

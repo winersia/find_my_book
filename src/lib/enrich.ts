@@ -34,7 +34,12 @@ interface Enrichable {
  * 제목이 이미 충분히 맞을 때 정식 표기로 다듬고 표지를 붙여 주는 역할이다.
  * 네트워크가 막혀 있으면 조용히 원본을 그대로 둔다.
  */
-export async function enrichBooks<T extends Enrichable>(books: T[]): Promise<T[]> {
+export interface EnrichOptions<T> {
+  /** 한 권 찾을 때마다 부른다. 결과를 먼저 보여 주고 뒤에서 채울 때 쓴다. */
+  onMatch?: (book: T) => void;
+}
+
+export async function enrichBooks<T extends Enrichable>(books: T[], options: EnrichOptions<T> = {}): Promise<T[]> {
   const result = [...books];
   let cursor = 0;
 
@@ -52,6 +57,7 @@ export async function enrichBooks<T extends Enrichable>(books: T[]): Promise<T[]
         author: book.author || match.author,
         match,
       };
+      options.onMatch?.(result[index]);
     }
   });
 

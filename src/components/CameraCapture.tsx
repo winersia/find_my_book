@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { runBusy } from "../lib/busy";
 import { maxBooksPerShot, toWorkingCanvas } from "../lib/image";
 
 interface Props {
@@ -82,19 +83,28 @@ export function CameraCapture({ onCapture, disabled, remaining, autoStart = fals
     const video = videoRef.current;
     if (!video || video.videoWidth === 0) return;
 
+    // 장면은 누른 그 순간 잡는다. 로딩 화면을 기다리는 사이 손이 움직이면 다른 장면이 찍힌다.
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     canvas.getContext("2d")?.drawImage(video, 0, 0);
     stop();
-    onCapture(await toWorkingCanvas(canvas));
+    // 4K 사진을 줄이는 동안 화면이 멈춘다. 로딩 화면을 먼저 세운다.
+    // 덮개는 사진을 넘기는 데까지만. 인식은 진행 화면이 따로 보여 주고, 덮개가 남으면
+    // 그만두기 버튼을 가린다 (onCapture 가 돌려주는 인식 약속을 기다리지 않는다).
+    await runBusy("사진 준비 중", async () => {
+      onCapture(await toWorkingCanvas(canvas));
+    });
   }, [onCapture, stop]);
 
   const pickFiles = useCallback(
     async (fileList: FileList | null) => {
       if (!fileList) return;
       for (const file of Array.from(fileList).slice(0, remaining)) {
-        onCapture(await toWorkingCanvas(file));
+        // 휴대폰 사진은 1,200만 화소가 넘는다. 풀고 줄이는 동안 로딩 화면을 세운다.
+        await runBusy("사진 여는 중", async () => {
+          onCapture(await toWorkingCanvas(file));
+        });
       }
       if (fileInputRef.current) fileInputRef.current.value = "";
     },

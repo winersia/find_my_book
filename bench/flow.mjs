@@ -130,6 +130,20 @@ const page = await context.newPage();
 page.on("pageerror", (error) => console.log("  [페이지오류]", String(error).slice(0, 160)));
 page.on("dialog", (dialog) => dialog.accept());
 
+// Open Library 에 닿지 않는 환경에서도 "뒤에서 채우기"를 확인할 수 있게 응답을 흉내 낸다.
+// 검색어를 그대로 제목으로 돌려준다.
+if (process.env.FLOW_FAKE_OPENLIBRARY) {
+  await context.route("**/openlibrary.org/search.json*", (route) => {
+    const q = new URL(route.request().url()).searchParams.get("q") ?? "";
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        docs: [{ title: q, author_name: ["가짜 저자"], first_publish_year: 2000, isbn: ["9780000000000"], key: "/works/OL1W" }],
+      }),
+    });
+  });
+}
+
 /** 촬영 화면의 안내 문구. 기기 해상도에 따라 권수가 달라진다. */
 let cameraGuide = "";
 
@@ -158,6 +172,11 @@ async function scanIntoSelectedSlot() {
     els.map((e) => e.value.trim()),
   );
   console.log(`   인식: ${recognized.join(" / ")}`);
+  // 책 정보(표지·ISBN)는 결과를 보여 준 뒤 뒤에서 채운다. 사람은 목록을 훑는 몇 초 사이에
+  // 끝나므로, 넣기 전에 그만큼 기다린다.
+  await page
+    .waitForFunction(() => !document.querySelector('[data-testid="scan-sheet"][data-enriching]'), undefined, { timeout: 60000 })
+    .catch(() => {});
   await page.click('[data-testid="apply-scan"]');
   await page.waitForSelector('[data-testid="scan-sheet"]', { state: "detached" });
   return recognized;
@@ -277,7 +296,7 @@ check("다른 칸은 비어 있다", (await slotCount(1)) === 0 && (await slotCo
 const matchBadges = await page.$$eval('[data-testid="match-badge"]', (els) =>
   els.map((e) => e.textContent.trim()),
 );
-if (process.env.HTTPS_PROXY || process.env.FLOW_EXPECT_NETWORK) {
+if (process.env.HTTPS_PROXY || process.env.FLOW_EXPECT_NETWORK || process.env.FLOW_FAKE_OPENLIBRARY) {
   check("Open Library 보정이 붙는다", matchBadges.length > 0, matchBadges.join(" / ") || "붙은 것 없음");
 } else {
   console.log("  (건너뜀) Open Library 보정 — 이 실행에는 바깥 망이 없음");
