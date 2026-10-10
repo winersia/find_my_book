@@ -27,6 +27,7 @@ import {
   type Bookcase,
   type ShelfBook,
 } from "./lib/bookcase";
+import { forgetAll, memorySize } from "./lib/memory";
 import { warmUpWhenIdle } from "./lib/warmup";
 
 const SETTINGS_KEY = "find-my-book:settings:v1";
@@ -323,6 +324,26 @@ export default function App() {
               />
               <span>Open Library에서 표지·ISBN 붙이기</span>
             </label>
+          </div>
+
+          <div className="settings">
+            {/* 고쳐 준 제목은 이 기기에만 남는다. 지울 길을 둔다. */}
+            <button
+              type="button"
+              onClick={() => {
+                const count = memorySize();
+                if (!count) {
+                  setToast({ message: "기억한 제목이 없어요." });
+                  return;
+                }
+                if (!window.confirm(`기억한 제목 ${count}권을 지울까요? 책장의 책은 그대로입니다.`)) return;
+                forgetAll();
+                setToast({ message: "기억한 제목을 지웠어요." });
+              }}
+              data-testid="forget-memory"
+            >
+              기억한 제목 지우기
+            </button>
           </div>
 
           <div className="danger-zone">

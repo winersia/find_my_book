@@ -42,6 +42,10 @@ export interface ShelfBook {
   match?: BookMatch;
   /** 결과 화면에서만 쓰는 책등 그림. 칸에 넣을 때 뺀다 (저장 공간을 먹는다). */
   preview?: string;
+  /** 결과 화면에서만 쓰는 책등 모양 지문 (memory.ts). 칸에 넣을 때 뺀다. */
+  look?: number[];
+  /** 기억해 둔 제목으로 채웠는지. strong 이면 확인 없이 넘어간다 (memory.ts). */
+  remembered?: "strong" | "weak";
 }
 
 export const DEFAULT_COLUMNS = 8;
@@ -251,6 +255,7 @@ export function booksFromReadings(readings: SpineReading[]): ShelfBook[] {
     color: reading.color,
     widthRatio: reading.widthRatio,
     preview: reading.preview,
+    look: reading.look,
   }));
 }
 

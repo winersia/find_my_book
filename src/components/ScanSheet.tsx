@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { appendBatch, booksFromReadings, needsReview, type ShelfBook } from "../lib/bookcase";
 import { enrichBooks } from "../lib/enrich";
+import { recall, remember } from "../lib/memory";
 import { maxBooksPerShot, TARGET_SPINE_PX, toThumbnail } from "../lib/image";
 import { readShelf, type ScanProgress } from "../lib/ocr";
 import { CameraCapture } from "./CameraCapture";
@@ -76,7 +77,8 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
         const widths = result.readings.map((reading) => reading.x1 - reading.x0).sort((a, b) => a - b);
         const measured = Math.round(widths[Math.floor(widths.length / 2)] ?? 0);
 
-        const batch = booksFromReadings(result.readings);
+        // 예전에 사용자가 고쳐 준 책이면 알아보고 그 제목을 채운다 (memory.ts).
+        const batch = recall(booksFromReadings(result.readings), needsReview);
         setBooks((previous) => (appending ? appendBatch(previous, batch) : batch));
         setSpinePx(measured);
         setShotCapacity(maxBooksPerShot(canvas.width));
@@ -235,6 +237,11 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
                       }}
                       aria-label={`${order + 1}번째 책 제목`}
                     />
+                    {book.remembered && !isDropped && (
+                      <span className="badge remembered" data-testid="remembered-badge">
+                        기억한 제목
+                      </span>
+                    )}
                     {toReview && (
                       <button
                         type="button"
@@ -285,14 +292,16 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
                   type="button"
                   className="primary"
                   // 사용자가 확인한 책은 더는 "확인 필요"가 아니다.
-                  onClick={() =>
+                  onClick={() => {
+                    // 사용자가 확인하거나 고친 책, 기억으로 채운 책을 기억해 둔다. 다음에 찍으면 알아본다.
+                    remember(kept.filter((book) => confirmed.has(book.id) || book.remembered));
                     onApply(
-                      kept.map(({ preview: _preview, ...book }) =>
+                      kept.map(({ preview: _preview, look: _look, remembered: _remembered, ...book }) =>
                         confirmed.has(book.id) ? { ...book, confidence: 1 } : book,
                       ),
                       photo,
-                    )
-                  }
+                    );
+                  }}
                   disabled={kept.length === 0}
                   data-testid="apply-scan"
                 >

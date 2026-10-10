@@ -10,6 +10,7 @@ import { REVIEW_BELOW } from "./bookcase";
 import {
   findTextLines,
   groupLines,
+  lookOf,
   spineStrip,
   toPreview,
   withTextlessBooks,
@@ -41,6 +42,8 @@ export interface SpineReading {
    * 사용자가 눈으로 견줘 보게 한다. 저장하지 않는다.
    */
   preview?: string;
+  /** 책등 모양 지문 (lines.ts 의 lookOf). 고친 제목을 기억했다가 알아보는 데 쓴다. */
+  look?: number[];
 }
 
 export interface ScanProgress {
@@ -364,7 +367,9 @@ async function readLines(
   for (const group of groups) {
     if (!Array.isArray(group)) {
       const blank = blankReading(group.x, group.width / 2);
-      blank.preview = previewOf(spineStrip(image, group));
+      const strip = spineStrip(image, group);
+      blank.look = lookOf(strip);
+      blank.preview = previewOf(strip);
       readings.push(blank);
       continue;
     }
@@ -377,6 +382,7 @@ async function readLines(
       blank.alternatives = group.map((item) => item.best.text).filter(Boolean);
       const titleLine = group.find((item) => inTitleZone(item.line)) ?? group[0];
       blank.preview = previewOf(titleLine.line.crop(titleLine.best.deg || 90));
+      blank.look = lookAt(titleLine.line);
       readings.push(blank);
       continue;
     }
@@ -411,6 +417,7 @@ async function readLines(
         ...withText.filter((item) => item !== main).map((item) => item.best.text),
       ].filter((text, index, list) => text && text !== main.best.text && list.indexOf(text) === index),
       confidence: Math.min(1, main.best.score / 100),
+      look: lookAt(main.line),
       // 확인할 책에만 그림을 붙인다. 인식기가 실제로 읽은 모양 그대로다.
       preview:
         main.best.score / 100 < REVIEW_BELOW
@@ -419,6 +426,14 @@ async function readLines(
     });
   }
   return readings;
+}
+
+/** 줄의 모양 지문. 읽은 방향과 상관없이 늘 같은 방향(90°)으로 잘라 잰다. */
+function lookAt(line: TextLine): number[] {
+  const variant = line.crop(90);
+  const look = lookOf(variant.canvas);
+  releaseVariants([variant]);
+  return look;
 }
 
 /** 자른 캔버스를 작은 그림으로 바꾸고 캔버스는 버린다. */
