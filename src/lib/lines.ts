@@ -863,7 +863,9 @@ function boundaryBetween(
 }
 
 /** 책장 한 칸의 책 하나. 글자 줄이 있는 책이거나, 글자 없이 경계로만 찾은 책이다. */
-export type ShelfSlot = { kind: "text"; lines: TextLine[] } | { kind: "blank"; x: number; width: number };
+export type ShelfSlot =
+  | { kind: "text"; lines: TextLine[] }
+  | { kind: "blank"; x: number; width: number; lean: number; top: number; bottom: number };
 
 /**
  * 묶은 책 사이사이에 글자 없는 책을 끼워 넣는다 (booksBetween).
@@ -894,6 +896,7 @@ export function withTextlessBooks(
     if (!next) return;
     const a = group.reduce((p, q) => (q.shelfX > p.shelfX ? q : p));
     const b = next.reduce((p, q) => (q.shelfX < p.shelfX ? q : p));
+    const lean = (a.lean + b.lean) / 2;
     for (const blank of booksBetween(luma, rgb, source.width, source.height, a, b, shelf, {
       edgeRatio,
       minSpine: book * 0.35,
@@ -904,8 +907,47 @@ export function withTextlessBooks(
       // 표지가 보이게 꽂힌 책은 넓은 표지면이 글자 없는 책처럼 보인다. 책 한 권은 이보다 얇다.
       maxSpine: book * 3,
     })) {
-      slots.push({ kind: "blank", ...blank });
+      slots.push({ kind: "blank", ...blank, lean, top: shelf.top, bottom: shelf.bottom });
     }
   });
   return slots;
 }
+
+/**
+ * 확인할 책을 사용자에게 보여 줄 작은 그림. 결과 화면에서 제목칸 옆에 두고 견줘 보게 한다.
+ * 저장하지 않으므로 JPEG 로 작게 만든다.
+ */
+export function toPreview(canvas: HTMLCanvasElement, height = PREVIEW_HEIGHT): string {
+  const scale = Math.min(1, height / Math.max(1, canvas.height));
+  const out = document.createElement("canvas");
+  out.width = Math.max(1, Math.round(canvas.width * scale));
+  out.height = Math.max(1, Math.round(canvas.height * scale));
+  out.getContext("2d")?.drawImage(canvas, 0, 0, out.width, out.height);
+  const url = out.toDataURL("image/jpeg", 0.8);
+  out.width = 0;
+  return url;
+}
+
+/** 글자 없는 책등을 눕혀 자른다. 결과 화면에서 "이 자리에 책이 있다"를 보여 주는 데 쓴다. */
+export function spineStrip(
+  source: HTMLCanvasElement,
+  slot: { x: number; width: number; lean: number; top: number; bottom: number },
+): HTMLCanvasElement {
+  const length = slot.bottom - slot.top;
+  const centerY = (slot.top + slot.bottom) / 2;
+  const line: LineShape = {
+    cx: slot.x + slot.lean * (centerY - (slot.top + slot.bottom) / 2),
+    cy: centerY,
+    slope: slot.lean,
+    length,
+    thickness: slot.width / (1 + 2 * CROSS_MARGIN),
+    top: slot.top,
+    bottom: slot.bottom,
+    cells: [],
+  };
+  return cropLine(source, line, 90, false, 0).canvas;
+}
+
+/** 확인용 그림 높이 (px) */
+const PREVIEW_HEIGHT = 44;
+

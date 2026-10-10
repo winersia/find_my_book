@@ -6,7 +6,17 @@ import {
   type SpineBand,
   type SpineVariant,
 } from "./segment";
-import { findTextLines, groupLines, withTextlessBooks, type GroupOptions, type LineOptions, type TextLine } from "./lines";
+import { REVIEW_BELOW } from "./bookcase";
+import {
+  findTextLines,
+  groupLines,
+  spineStrip,
+  toPreview,
+  withTextlessBooks,
+  type GroupOptions,
+  type LineOptions,
+  type TextLine,
+} from "./lines";
 import { yieldToPaint } from "./yield";
 import { detectText, hasModels, loadModels, readLine, releaseModels, watchModels } from "./ppocr";
 
@@ -26,6 +36,11 @@ export interface SpineReading {
   color: string;
   /** 사진 가로 대비 책등 두께 비율 */
   widthRatio: number;
+  /**
+   * 확인이 필요한 책의 책등 그림 (JPEG data URL). 결과 화면에서 제목칸 아래에 두고
+   * 사용자가 눈으로 견줘 보게 한다. 저장하지 않는다.
+   */
+  preview?: string;
 }
 
 export interface ScanProgress {
@@ -191,13 +206,6 @@ export async function readShelf(
  */
 const DETECT_SIDE = 2560;
 
-/**
- * 이 확신도(0~100) 아래면 제목칸을 비운다.
- * 실제 책장 사진 31권에서 제대로 읽은 제목은 모두 88 이상이었고, 왼쪽 10권 중 틀린 넷은
- * 69~80 이었다 ("데를", "지그기치", "주 속의 방구 다호").
- */
-const SURE_SCORE = 85;
-
 /** 선반 높이 가운데 이 구간이 제목 구역이다 (위에서, 아래에서 뺄 비율) */
 const TITLE_ZONE_TOP = 0.22;
 const TITLE_ZONE_BOTTOM = 0.15;
@@ -330,7 +338,9 @@ async function readLines(
   };
   for (const group of groups) {
     if (!Array.isArray(group)) {
-      readings.push(blankReading(group.x, group.width / 2));
+      const blank = blankReading(group.x, group.width / 2);
+      blank.preview = previewOf(spineStrip(image, group));
+      readings.push(blank);
       continue;
     }
     // 제목 후보는 제목 구역에 걸친 줄뿐이다. 위아래 끝 라벨은 제목이 될 수 없다.
@@ -340,6 +350,8 @@ async function readLines(
       const x = group.reduce((sum, item) => sum + item.line.shelfX, 0) / group.length;
       const blank = blankReading(x, Math.max(...group.map((item) => item.line.thickness)));
       blank.alternatives = group.map((item) => item.best.text).filter(Boolean);
+      const titleLine = group.find((item) => inTitleZone(item.line)) ?? group[0];
+      blank.preview = previewOf(titleLine.line.crop(titleLine.best.deg || 90));
       readings.push(blank);
       continue;
     }
@@ -357,7 +369,6 @@ async function readLines(
       return item.line.thickness * (0.5 + item.best.score / 100) * (letters <= 3 ? 0.6 : 1) * credit * series;
     };
     const main = [...withText].sort((a, b) => titleness(b) - titleness(a))[0];
-    const sure = main.best.score >= SURE_SCORE;
     const x = main.line.shelfX;
     const band = bands.find((b) => b.x0 <= x && x < b.x1) ?? nearestBand(bands, x);
     const half = Math.max(...group.map((item) => item.line.thickness));
@@ -366,19 +377,31 @@ async function readLines(
       x1: Math.round(x + half),
       color: band?.color ?? "#8a7a60",
       widthRatio: band?.widthRatio ?? 0.02,
-      // 확신이 낮으면 제목칸은 비우고, 읽은 글자는 "다르게 읽기" 후보로만 둔다.
-      // 엉뚱한 제목이 채워져 있으면 사용자가 알아채지 못하고 그대로 넣는다. 빈칸은 눈에 띈다.
-      text: sure ? main.best.text : "",
+      // 확신이 낮아도 읽은 제목은 넣는다. 결과 화면에서 확신이 낮은 책은 사용자가 하나씩
+      // 확인해야 칸에 넣을 수 있다 (bookcase.ts 의 needsReview).
+      text: main.best.text,
       raw: main.best.raw,
       alternatives: [
-        ...(sure ? [] : [main.best.text]),
         ...main.candidates.slice(1).map((c) => c.text),
         ...withText.filter((item) => item !== main).map((item) => item.best.text),
-      ].filter((text, index, list) => text && (!sure || text !== main.best.text) && list.indexOf(text) === index),
+      ].filter((text, index, list) => text && text !== main.best.text && list.indexOf(text) === index),
       confidence: Math.min(1, main.best.score / 100),
+      // 확인할 책에만 그림을 붙인다. 인식기가 실제로 읽은 모양 그대로다.
+      preview:
+        main.best.score / 100 < REVIEW_BELOW
+          ? previewOf(main.best.deg === 0 ? (main.line.stacked() ?? main.line.crop(90)) : main.line.crop(main.best.deg))
+          : undefined,
     });
   }
   return readings;
+}
+
+/** 자른 캔버스를 작은 그림으로 바꾸고 캔버스는 버린다. */
+function previewOf(variant: SpineVariant | HTMLCanvasElement): string {
+  const canvas = "canvas" in variant ? variant.canvas : variant;
+  const url = toPreview(canvas);
+  canvas.width = 0;
+  return url;
 }
 
 function nearestBand(bands: SpineBand[], x: number): SpineBand | undefined {

@@ -101,7 +101,7 @@ await page.addInitScript(() => {
   new MutationObserver(() => {
     const text = document.querySelector('[data-testid="scanning"] .progress-line')?.textContent ?? "";
     const tail = window.__marks[window.__marks.length - 1];
-    const state = document.querySelector('[data-testid="apply-scan"]') ? "결과" : text.replace(/\s+/g, " ").trim();
+    const state = document.querySelector('[data-testid="scan-summary"]') ? "결과" : text.replace(/\s+/g, " ").trim();
     const key = state.replace(/[0-9]+\/[0-9]+.*/, "");
     if (state && (!tail || tail.key !== key)) window.__marks.push({ at: Math.round(performance.now()), state, key });
   }).observe(document, { subtree: true, childList: true, characterData: true });
@@ -129,7 +129,7 @@ if (gallery) {
     setTimeout(() => document.querySelector('[data-testid="scan-sheet"] button.shutter').click(), 0);
   });
 }
-await page.waitForSelector('[data-testid="apply-scan"], [data-testid="scan-sheet"] .error, .notes', { timeout: 900000 });
+await page.waitForSelector('[data-testid="scan-summary"], [data-testid="scan-sheet"] .error, .notes', { timeout: 900000 });
 await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
 
 const { gaps, marks } = await page.evaluate(() => ({ gaps: window.__gaps, marks: window.__marks }));

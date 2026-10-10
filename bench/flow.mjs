@@ -166,7 +166,7 @@ async function scanIntoSelectedSlot() {
   cameraGuide = await page.$eval(".frame-guide span", (el) => el.textContent.replace(/\s+/g, " ").trim());
   countTap();
   await shutter.click();
-  await page.waitForSelector('[data-testid="apply-scan"]', { timeout: 600000 });
+  await page.waitForSelector('[data-testid="scan-summary"]', { timeout: 600000 });
   // 결과 제목은 그 자리에서 고칠 수 있는 입력칸이다.
   const recognized = await page.$$eval(".scan-preview .scan-title", (els) =>
     els.map((e) => e.value.trim()),
@@ -177,9 +177,17 @@ async function scanIntoSelectedSlot() {
   await page
     .waitForFunction(() => !document.querySelector('[data-testid="scan-sheet"][data-enriching]'), undefined, { timeout: 60000 })
     .catch(() => {});
+  await confirmAll();
   await page.click('[data-testid="apply-scan"]');
   await page.waitForSelector('[data-testid="scan-sheet"]', { state: "detached" });
   return recognized;
+}
+
+/** 사람이 하듯 확인할 책을 하나씩 확인한다. 남아 있으면 넣기 버튼이 나오지 않는다. */
+async function confirmAll() {
+  while (await page.$('[data-testid="confirm-title"]')) {
+    await page.locator('[data-testid="confirm-title"]').first().click();
+  }
 }
 
 /** 칸을 찍되, 넣기 전에 "이어서 찍기"로 한 장 더 찍어 이어 붙인다. */
@@ -196,7 +204,7 @@ async function scanTwiceIntoSelectedSlot() {
     );
     countTap();
     await shutter.click();
-    await page.waitForSelector('[data-testid="apply-scan"]', { timeout: 600000 });
+    await page.waitForSelector('[data-testid="scan-summary"]', { timeout: 600000 });
   };
 
   await page.click('[data-testid="scan-slot"]');
@@ -209,6 +217,7 @@ async function scanTwiceIntoSelectedSlot() {
   const afterSecond = await page.$$eval(".scan-preview .scan-title", (els) => els.length);
   const summary = await page.$eval('[data-testid="scan-summary"]', (el) => el.textContent.trim());
 
+  await confirmAll();
   await page.click('[data-testid="apply-scan"]');
   await page.waitForSelector('[data-testid="scan-sheet"]', { state: "detached" });
   return { afterFirst, afterSecond, summary };

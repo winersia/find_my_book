@@ -80,9 +80,10 @@ await page.locator('[data-testid="scan-sheet"] button.shutter').click();
 await page.waitForTimeout(1500);
 await measure("인식 중");
 
-await page.waitForSelector('[data-testid="apply-scan"]', { timeout: 600000 });
+await page.waitForSelector('[data-testid="scan-summary"]', { timeout: 600000 });
 await measure("결과");
 
+while (await page.$('[data-testid="confirm-title"]')) await page.locator('[data-testid="confirm-title"]').first().click();
 await page.click('[data-testid="apply-scan"]');
 await page.waitForSelector('[data-testid="scan-sheet"]', { state: "detached" });
 await measure("채운 칸");
