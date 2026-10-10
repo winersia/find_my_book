@@ -400,6 +400,10 @@ async function readLines(
       return item.line.thickness * (0.5 + item.best.score / 100) * (letters <= 3 ? 0.6 : 1) * credit * series;
     };
     const main = [...withText].sort((a, b) => titleness(b) - titleness(a))[0];
+    // 제목이 두 줄로 갈려 잡히기도 한다. 낱말 사이가 넓으면 검출이 거기서 끊는다
+    // ("심술쟁이" / "아기 양"). 같은 축 위에 같은 굵기로 바로 이어진 줄은 제목의 뒷부분이다.
+    const parts = titleParts(main, withText.filter((item) => !repeated.has(item) && !isCreditLine(item.best.text)));
+    const title = parts.map((item) => item.best.text).join(" ");
     const x = main.line.shelfX;
     const band = bands.find((b) => b.x0 <= x && x < b.x1) ?? nearestBand(bands, x);
     const half = Math.max(...group.map((item) => item.line.thickness));
@@ -410,13 +414,14 @@ async function readLines(
       widthRatio: band?.widthRatio ?? 0.02,
       // 확신이 낮아도 읽은 제목은 넣는다. 결과 화면에서 확신이 낮은 책은 사용자가 하나씩
       // 확인해야 칸에 넣을 수 있다 (bookcase.ts 의 needsReview).
-      text: main.best.text,
-      raw: main.best.raw,
+      text: title,
+      raw: parts.map((item) => item.best.raw).join(" "),
       alternatives: [
         ...main.candidates.slice(1).map((c) => c.text),
-        ...withText.filter((item) => item !== main).map((item) => item.best.text),
-      ].filter((text, index, list) => text && text !== main.best.text && list.indexOf(text) === index),
-      confidence: Math.min(1, main.best.score / 100),
+        ...withText.filter((item) => !parts.includes(item)).map((item) => item.best.text),
+      ].filter((text, index, list) => text && text !== title && list.indexOf(text) === index),
+      // 이어 붙인 제목은 가장 덜 확실한 조각만큼만 믿는다.
+      confidence: Math.min(1, ...parts.map((item) => item.best.score / 100)),
       look: lookAt(main.line),
       // 확인할 책에만 그림을 붙인다. 인식기가 실제로 읽은 모양 그대로다.
       preview:
@@ -427,6 +432,47 @@ async function readLines(
   }
   return readings;
 }
+
+/**
+ * 제목 줄과, 그 앞뒤로 이어진 같은 제목의 줄들을 읽는 순서대로.
+ * 이어졌다고 보려면 같은 축 위에 있고(굵기 절반 안), 굵기가 비슷하고, 틈이 글자 한 자 반보다
+ * 좁고, 같은 방향으로 읽혔어야 한다. 시리즈 라벨은 제목 위로 한참 떨어져 있어 붙지 않는다.
+ * -90° 와 쌓은 글자(0°)는 위에서 아래로, 90° 는 아래에서 위로 읽는다 (cropLine 의 회전).
+ */
+function titleParts<T extends { line: TextLine; best: Candidate }>(main: T, items: T[]): T[] {
+  const downward = (item: T) => item.best.deg !== 90;
+  const joins = (p: T, q: T) => {
+    const thick = Math.max(p.line.thickness, q.line.thickness);
+    const ratio = p.line.thickness / Math.max(1, q.line.thickness);
+    const gap = Math.max(p.line.top, q.line.top) - Math.min(p.line.bottom, q.line.bottom);
+    return (
+      downward(p) === downward(q) &&
+      q.best.score >= JOIN_SCORE &&
+      Math.abs(p.line.shelfX - q.line.shelfX) < thick * 0.5 &&
+      ratio > 0.7 && ratio < 1.4 &&
+      gap > -thick * 0.2 && gap < thick * 1.6
+    );
+  };
+  const parts = [main];
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const item of items) {
+      if (parts.includes(item)) continue;
+      const above = parts.reduce((p, q) => (q.line.top < p.line.top ? q : p));
+      const below = parts.reduce((p, q) => (q.line.bottom > p.line.bottom ? q : p));
+      if ((item.line.bottom <= above.line.top + 1 && joins(above, item)) || (item.line.top >= below.line.bottom - 1 && joins(below, item))) {
+        parts.push(item);
+        grew = true;
+      }
+    }
+  }
+  parts.sort((p, q) => p.line.top - q.line.top);
+  return downward(main) ? parts : parts.reverse();
+}
+
+/** 제목 뒷부분으로 이어 붙이려면 이만큼은 확실히 읽혀야 한다. 흐린 쓰레기 조각은 붙이지 않는다. */
+const JOIN_SCORE = 70;
 
 /** 줄의 모양 지문. 읽은 방향과 상관없이 늘 같은 방향(90°)으로 잘라 잰다. */
 function lookAt(line: TextLine): number[] {
