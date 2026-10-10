@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { appendBatch, booksFromReadings, LOW_CONFIDENCE, type ShelfBook } from "../lib/bookcase";
+import { appendBatch, booksFromReadings, needsReview, type ShelfBook } from "../lib/bookcase";
 import { enrichBooks } from "../lib/enrich";
 import { maxBooksPerShot, TARGET_SPINE_PX, toThumbnail } from "../lib/image";
 import { readShelf, type ScanProgress } from "../lib/ocr";
@@ -33,6 +33,12 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [books, setBooks] = useState<ShelfBook[]>([]);
   const [dropped, setDropped] = useState<Set<string>>(new Set());
+  /**
+   * 사용자가 눈으로 확인한 책. 확신이 낮은 책은 [맞아요]를 누르거나 제목을 고쳐 써야
+   * 확인된다. 확인 안 된 책이 남아 있으면 칸에 넣지 못한다.
+   */
+  const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
+  const listRef = useRef<HTMLOListElement | null>(null);
   const [photo, setPhoto] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [shots, setShots] = useState(0);
@@ -75,7 +81,10 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
         setSpinePx(measured);
         setShotCapacity(maxBooksPerShot(canvas.width));
         setShots((previous) => (appending ? previous + 1 : 1));
-        if (!appending) setDropped(new Set());
+        if (!appending) {
+          setDropped(new Set());
+          setConfirmed(new Set());
+        }
         setAppending(false);
         setStage("review");
 
@@ -116,6 +125,17 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
   }, []);
 
   const kept = books.filter((book) => !dropped.has(book.id));
+  const isPending = (book: ShelfBook) => needsReview(book) && !confirmed.has(book.id);
+  const pending = kept.filter(isPending);
+  const confirm = (id: string) => setConfirmed((previous) => new Set(previous).add(id));
+  /** 다음 확인할 책으로 옮겨 가 제목칸에 커서를 둔다. 수십 권이면 직접 찾기 어렵다. */
+  const goToNextPending = () => {
+    const next = pending[0];
+    if (!next) return;
+    const row = listRef.current?.querySelector<HTMLElement>(`[data-book="${next.id}"]`);
+    row?.scrollIntoView({ block: "center", behavior: "smooth" });
+    row?.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
+  };
   // 책등이 목표 굵기에 못 미치면, 이번 사진을 몇 등분해 다시 찍어야 하는지 알려 준다.
   const thin = spinePx > 0 && spinePx < TARGET_SPINE_PX;
 
@@ -172,6 +192,12 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
               {existingCount > 0 && ` · 이 칸의 ${existingCount}권과 바뀝니다`}
               {enriching && " · 책 정보 찾는 중"}
             </p>
+            {pending.length > 0 && (
+              <p className="notice review-notice" data-testid="review-notice">
+                표시된 {pending.length}권은 제목이 정확하지 않을 수 있어요. 사진과 맞는지 보고
+                [맞아요]를 누르거나 고쳐 주세요.
+              </p>
+            )}
             {thin && (
               <p className="notice" data-testid="thin-spine-notice">
                 책등이 {spinePx}px로 얇아 제목이 뭉개졌어요. <b>칸 하나만</b> 화면에 꽉 차게
@@ -179,11 +205,17 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
                 (이 카메라는 한 장에 {shotCapacity}권까지).
               </p>
             )}
-            <ol className="scan-preview">
+            <ol className="scan-preview" ref={listRef}>
               {books.map((book, order) => {
                 const isDropped = dropped.has(book.id);
+                const toReview = !isDropped && isPending(book);
                 return (
-                  <li key={book.id} className={isDropped ? "dropped" : book.confidence < LOW_CONFIDENCE ? "unsure" : ""}>
+                  <li
+                    key={book.id}
+                    data-book={book.id}
+                    data-review={toReview ? "pending" : undefined}
+                    className={isDropped ? "dropped" : toReview ? "review" : ""}
+                  >
                     <span className="order">{order + 1}</span>
                     <span className="swatch" style={{ background: book.color }} aria-hidden="true" />
                     <input
@@ -193,6 +225,8 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
                       disabled={isDropped}
                       onChange={(event) => {
                         edited.current.add(book.id);
+                        // 고쳐 썼다면 사진과 견줘 본 것이다.
+                        confirm(book.id);
                         setBooks((previous) =>
                           previous.map((item) =>
                             item.id === book.id ? { ...item, title: event.target.value } : item,
@@ -201,8 +235,25 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
                       }}
                       aria-label={`${order + 1}번째 책 제목`}
                     />
-                    {book.confidence < LOW_CONFIDENCE && !isDropped && (
-                      <span className="badge confidence low">확인 필요</span>
+                    {toReview && (
+                      <button
+                        type="button"
+                        className="confirm"
+                        data-testid="confirm-title"
+                        onClick={() => confirm(book.id)}
+                        aria-label={`${order + 1}번째 책 제목 확인`}
+                      >
+                        {book.title.trim() ? "맞아요" : "비워 두기"}
+                      </button>
+                    )}
+                    {/* 인식기가 읽은 책등 그대로. 제목칸과 나란히 두고 견줘 보게 한다. */}
+                    {book.preview && needsReview(book) && !isDropped && (
+                      <img
+                        className="spine-preview"
+                        src={book.preview}
+                        alt={`${order + 1}번째 책의 책등`}
+                        data-testid="spine-preview"
+                      />
                     )}
                     <button
                       type="button"
@@ -224,15 +275,30 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
               })}
             </ol>
             <div className="scan-actions">
-              <button
-                type="button"
-                className="primary"
-                onClick={() => onApply(kept, photo)}
-                disabled={kept.length === 0}
-                data-testid="apply-scan"
-              >
-                {kept.length}권 이 칸에 넣기
-              </button>
+              {pending.length > 0 ? (
+                // 확인 안 된 책이 남았다. 넣기 대신 다음 확인할 책으로 데려간다.
+                <button type="button" className="primary" onClick={goToNextPending} data-testid="next-review">
+                  확인 {pending.length}권 남음 · 다음 책 보기
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="primary"
+                  // 사용자가 확인한 책은 더는 "확인 필요"가 아니다.
+                  onClick={() =>
+                    onApply(
+                      kept.map(({ preview: _preview, ...book }) =>
+                        confirmed.has(book.id) ? { ...book, confidence: 1 } : book,
+                      ),
+                      photo,
+                    )
+                  }
+                  disabled={kept.length === 0}
+                  data-testid="apply-scan"
+                >
+                  {kept.length}권 이 칸에 넣기
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {

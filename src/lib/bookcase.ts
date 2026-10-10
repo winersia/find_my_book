@@ -40,6 +40,8 @@ export interface ShelfBook {
   /** 칸 안에서 차지하는 두께 비율 */
   widthRatio: number;
   match?: BookMatch;
+  /** 결과 화면에서만 쓰는 책등 그림. 칸에 넣을 때 뺀다 (저장 공간을 먹는다). */
+  preview?: string;
 }
 
 export const DEFAULT_COLUMNS = 8;
@@ -50,6 +52,17 @@ export const MIN_ROWS = 1;
 export const MAX_ROWS = 8;
 /** 신뢰도가 이 아래면 "확인 필요"로 표시한다 */
 export const LOW_CONFIDENCE = 0.6;
+
+/**
+ * 결과 화면에서 사용자가 눈으로 확인해야 하는 확신도. 이보다 낮으면 확인 전에는 칸에 못 넣는다.
+ * 실제 책장 사진 31권에서 바르게 읽은 제목은 모두 0.88 이상이었고, 틀린 것은 0.69~0.80 이었다.
+ */
+export const REVIEW_BELOW = 0.85;
+
+/** 칸에 넣기 전에 사용자가 확인해야 하는 책인지. 제목을 못 읽은 책도 확인 대상이다. */
+export function needsReview(book: Pick<ShelfBook, "title" | "confidence">): boolean {
+  return !book.title.trim() || book.confidence < REVIEW_BELOW;
+}
 
 const STORAGE_KEY = "find-my-book:bookcases:v1";
 
@@ -237,6 +250,7 @@ export function booksFromReadings(readings: SpineReading[]): ShelfBook[] {
     confidence: reading.confidence,
     color: reading.color,
     widthRatio: reading.widthRatio,
+    preview: reading.preview,
   }));
 }
 
