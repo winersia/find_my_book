@@ -53,6 +53,10 @@ export interface LineOptions {
   maxLeanDeg?: number;
   /** 이보다 짧은 줄은 버린다 (원본 px) */
   minLength?: number;
+  /** 줄 양 끝으로 더 자를 길이 (줄 굵기 대비) */
+  alongMargin?: number;
+  /** 쌓은 글자의 음절 크기 하한 (자른 폭 대비) */
+  glyphFloor?: number;
 }
 
 const DEFAULTS: Required<LineOptions> = {
@@ -60,10 +64,15 @@ const DEFAULTS: Required<LineOptions> = {
   columnGap: 24,
   maxLeanDeg: 20,
   minLength: 60,
+  // 0.4 이면 첫 글자가 잘렸다 ("바다"의 ㅂ, "내가"의 내). 1.0 넘게 늘리면 이웃 글자가 들어왔다.
+  alongMargin: 0.8,
+  glyphFloor: 0.6,
 };
 
 /** 줄 둘레로 얼마나 넉넉히 자를지. 검출 영역은 글자보다 약간 좁게 나온다. */
 const CROSS_MARGIN = 1.0;
+/** 쌓은 글자를 세울 때 먼저 자를 폭 (줄 굵기 대비). 실제 잉크 폭은 그 안에서 다시 잰다 */
+const WIDE_CROSS = 2.6;
 const ALONG_MARGIN = 0.4;
 /** 인식기로 넘기기 전 줄 굵기를 이 정도로 맞춘다 */
 const TARGET_CROSS = 72;
@@ -229,8 +238,8 @@ export function findTextLines(
       ...line,
       lean: leanOf(line),
       shelfX: line.cx + leanOf(line) * (shelfY - line.cy),
-      crop: (deg: number, invert = false) => cropLine(source, line, deg, invert),
-      stacked: () => restack(source, line),
+      crop: (deg: number, invert = false) => cropLine(source, line, deg, invert, spec.alongMargin),
+      stacked: () => restack(source, line, spec.glyphFloor),
     }))
     .sort((p, q) => p.shelfX - q.shelfX);
 }
@@ -279,24 +288,70 @@ function glyphCells(occupancy: Uint16Array, half: number, thickness: number): [n
  * 그래서 세운 줄 이미지에서 행마다 밝기 대비를 잰다. 글자 사이 행에는 바탕만 있어
  * 대비가 뚝 떨어진다.
  */
-function restack(source: HTMLCanvasElement, line: LineShape): SpineVariant | null {
+function restack(source: HTMLCanvasElement, line: LineShape, glyphFloor = 0.6): SpineVariant | null {
   const glyph = line.thickness * 1.4;
   const scale = Math.min(MAX_UPSCALE, Math.max(1, TARGET_CROSS / (glyph * 1.6)));
   const along = line.length + line.thickness;
-  const upright = drawUpright(source, line, glyph, along, scale);
+  // 넉넉하게 세워 자른 뒤 실제로 잉크가 있는 폭을 다시 잰다. 어두운 바탕에 가는 획이면
+  // 검출 굵기가 글자 폭보다 작게 나와, 그 폭으로 자르면 음절 좌우가 잘렸다
+  // ("숲속의 방귀 대회" 7음절이 반쪽짜리 16칸이 됐다).
+  const upright = drawUpright(source, line, line.thickness * WIDE_CROSS, along, scale);
   const ctx = upright.getContext("2d", { willReadFrequently: true });
   if (!ctx) return null;
-  const { width: w, height: h } = upright;
-  const pixels = ctx.getImageData(0, 0, w, h).data;
+  const { width: fullWidth, height: h } = upright;
+  const pixels = ctx.getImageData(0, 0, fullWidth, h).data;
+  const lumaAt = (x: number, y: number) => {
+    const i = (y * fullWidth + x) * 4;
+    return 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
+  };
 
-  // 행마다 밝기의 퍼짐(표준편차)
+  // 열마다 밝기의 퍼짐. 글자가 지나는 열이 높다.
+  const columnInk = new Float32Array(fullWidth);
+  for (let x = 0; x < fullWidth; x++) {
+    let sum = 0;
+    let squares = 0;
+    for (let y = 0; y < h; y++) {
+      const v = lumaAt(x, y);
+      sum += v;
+      squares += v * v;
+    }
+    const mean = sum / h;
+    columnInk[x] = Math.sqrt(Math.max(0, squares / h - mean * mean));
+  }
+  // 가운데 근처에서 가장 진한 열부터 양옆으로, 잉크 없는 열이 몇 개 이어질 때까지 넓힌다.
+  // 이웃 책의 글자는 그 틈 너머에 있다.
+  const from0 = Math.floor(fullWidth * 0.3);
+  const to0 = Math.ceil(fullWidth * 0.7);
+  let seed = from0;
+  for (let x = from0; x < to0; x++) if (columnInk[x] > columnInk[seed]) seed = x;
+  const columnCut = columnInk[seed] * 0.35;
+  const reach = (direction: number) => {
+    let x = seed;
+    let quiet = 0;
+    let edge = seed;
+    while (x + direction >= 0 && x + direction < fullWidth && quiet < 4) {
+      x += direction;
+      if (columnInk[x] >= columnCut) {
+        edge = x;
+        quiet = 0;
+      } else quiet++;
+    }
+    return edge;
+  };
+  const left = reach(-1);
+  const right = reach(1);
+  const margin = Math.round((right - left + 1) * 0.12) + 1;
+  const x0 = Math.max(0, left - margin);
+  const x1 = Math.min(fullWidth - 1, right + margin);
+  const w = x1 - x0 + 1;
+
+  // 행마다 밝기의 퍼짐(표준편차). 잉크 폭 안에서만 잰다.
   const spread = new Float32Array(h);
   for (let y = 0; y < h; y++) {
     let sum = 0;
     let squares = 0;
-    for (let x = 0; x < w; x++) {
-      const i = (y * w + x) * 4;
-      const v = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
+    for (let x = x0; x <= x1; x++) {
+      const v = lumaAt(x, y);
       sum += v;
       squares += v * v;
     }
@@ -308,27 +363,8 @@ function restack(source: HTMLCanvasElement, line: LineShape): SpineVariant | nul
   const low = sorted[Math.floor(sorted.length * 0.1)];
   const cut = low + (high - low) * 0.3;
 
-  // 음절 크기. 쌓아 쓴 글자는 폭이 고르므로, 글자가 있는 열의 폭을 재면 된다.
-  // 한글 음절은 거의 정사각형이라 높이도 이만하다.
-  const columnInk = new Float32Array(w);
-  for (let x = 0; x < w; x++) {
-    let sum = 0;
-    let squares = 0;
-    for (let y = 0; y < h; y++) {
-      const i = (y * w + x) * 4;
-      const v = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
-      sum += v;
-      squares += v * v;
-    }
-    const mean = sum / h;
-    columnInk[x] = Math.sqrt(Math.max(0, squares / h - mean * mean));
-  }
-  const columnCut = Math.max(...columnInk) * 0.35;
-  let left = 0;
-  let right = w - 1;
-  while (left < right && columnInk[left] < columnCut) left++;
-  while (right > left && columnInk[right] < columnCut) right--;
-  const size = Math.max(glyph * scale * 0.6, right - left + 1);
+  // 음절 크기. 쌓아 쓴 글자는 폭이 고르고, 한글 음절은 거의 정사각형이라 높이도 이만하다.
+  const size = Math.max(glyph * scale * glyphFloor, right - left + 1);
 
   const runs: [number, number][] = [];
   let from = -1;
@@ -342,13 +378,24 @@ function restack(source: HTMLCanvasElement, line: LineShape): SpineVariant | nul
   }
   const merged = groupSyllables(runs, size);
   // 붙어 있는 글자는 크기로 나눈다.
-  const cells: [number, number][] = [];
+  const split: [number, number][] = [];
   for (const [a, b] of merged) {
     const parts = Math.max(1, Math.round((b - a + 1) / size));
     for (let k = 0; k < parts; k++) {
-      cells.push([a + ((b - a + 1) * k) / parts, a + ((b - a + 1) * (k + 1)) / parts]);
+      split.push([a + ((b - a + 1) * k) / parts, a + ((b - a + 1) * (k + 1)) / parts]);
     }
   }
+  // 잉크가 거의 없는 칸은 음절이 아니다. 띄어쓰기 자리의 바탕 무늬가 칸으로 잘려
+  // "내가 제일 커"가 "내기경제일커"로 읽혔다. 칸의 대비가 다른 칸들보다 크게 낮으면 뺀다.
+  const inkOf = ([a, b]: [number, number]) => {
+    let sum = 0;
+    let n = 0;
+    for (let y = Math.floor(a); y <= Math.min(h - 1, Math.ceil(b)); y++, n++) sum += spread[y];
+    return n ? sum / n : 0;
+  };
+  const inks = split.map(inkOf);
+  const typical = [...inks].sort((p, q) => p - q)[Math.floor(inks.length / 2)] ?? 0;
+  const cells = split.filter((_, i) => inks[i] >= typical * 0.45);
   if (cells.length < 3) {
     upright.width = 0;
     return null;
@@ -369,7 +416,7 @@ function restack(source: HTMLCanvasElement, line: LineShape): SpineVariant | nul
     const top = Math.max(0, Math.floor(a - pad / 2));
     const height = Math.min(h - top, Math.ceil(b - a + pad));
     const dy = Math.round((canvas.height - height) / 2);
-    out.drawImage(upright, 0, top, w, height, pad + index * (w + pad), dy, w, height);
+    out.drawImage(upright, x0, top, w, height, pad + index * (w + pad), dy, w, height);
   });
   upright.width = 0;
   return { deg: 0, invert: false, canvas };
@@ -456,9 +503,10 @@ function cropLine(
   line: LineShape,
   deg: number,
   invert: boolean,
+  alongMargin = ALONG_MARGIN,
 ): SpineVariant {
   const cross = line.thickness * (1 + 2 * CROSS_MARGIN);
-  const along = line.length + line.thickness * 2 * ALONG_MARGIN;
+  const along = line.length + line.thickness * 2 * alongMargin;
   const scale = Math.min(MAX_UPSCALE, Math.max(1, TARGET_CROSS / cross));
   const swap = deg % 180 !== 0;
   const canvas = document.createElement("canvas");
@@ -603,7 +651,7 @@ function lumaOf(source: HTMLCanvasElement): Float32Array {
 }
 
 /** 책등 경계로 볼 최소 밝기 변화 (0~255, 이웃 화소 차) */
-const MIN_EDGE = 6;
+const MIN_EDGE = 4;
 
 /** 경계를 잴 세로 범위. 선반에 책이 서 있는 높이 안이어야 한다. */
 export interface ShelfSpan {
@@ -651,8 +699,10 @@ function edgeProfile(
       const row = new Float32Array(steps + 1);
       for (let k = 0; k <= steps; k++) {
         const x = Math.round(left + ((right - left) * k) / steps);
-        if (x < 1 || x >= width - 1) continue;
-        row[k] = Math.abs(luma[y * width + x + 1] - luma[y * width + x - 1]);
+        if (x < 2 || x >= width - 2) continue;
+        // 두 화소씩 떨어진 곳끼리 잰다. 바로 옆끼리 재면 부드럽게 번진 경계는
+        // 문턱(MIN_EDGE)에 못 미쳐, 합성 책장에서 이웃 책끼리 한 권이 됐다.
+        row[k] = Math.abs(luma[y * width + x + 2] - luma[y * width + x - 2]);
       }
       for (let k = 0; k <= steps; k++) {
         samples[k].push(Math.max(row[k], row[Math.max(0, k - 1)], row[Math.min(steps, k + 1)]));

@@ -204,6 +204,25 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
                     {book.confidence < LOW_CONFIDENCE && !isDropped && (
                       <span className="badge confidence low">확인 필요</span>
                     )}
+                    {/* 확신이 없어 비운 칸에는 읽은 글자를 추측으로만 보여 준다. 누르면 채워지고
+                        고쳐 쓸 수 있다. 처음부터 채워 두면 틀린 제목을 그대로 넣기 쉽다. */}
+                    {!book.title && book.alternatives[0] && !isDropped && (
+                      <button
+                        type="button"
+                        className="suggest"
+                        data-testid="title-suggestion"
+                        onClick={() => {
+                          edited.current.add(book.id);
+                          setBooks((previous) =>
+                            previous.map((item) =>
+                              item.id === book.id ? { ...item, title: book.alternatives[0] } : item,
+                            ),
+                          );
+                        }}
+                      >
+                        혹시 ‘{book.alternatives[0]}’?
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="drop"

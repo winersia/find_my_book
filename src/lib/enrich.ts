@@ -47,6 +47,9 @@ export async function enrichBooks<T extends Enrichable>(books: T[], options: Enr
     while (cursor < result.length) {
       const index = cursor++;
       const book = result[index];
+      // 확신이 없어 비워 둔 제목은 사용자가 채운다. 낮은 확신의 추측으로 검색해
+      // 다른 책 제목을 채워 넣으면 빈칸으로 둔 뜻이 없어진다.
+      if (!book.title.trim()) continue;
       // 다듬은 제목이 가장 잘 찾힌다. 원문은 옆 책 글자가 섞여 있어 검색이 자주 빗나간다.
       const match = await lookupAny([book.title, book.spineText, ...(book.alternatives ?? [])]);
       if (!match) continue;

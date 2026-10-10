@@ -191,6 +191,13 @@ export async function readShelf(
  */
 const DETECT_SIDE = 2560;
 
+/**
+ * 이 확신도(0~100) 아래면 제목칸을 비운다.
+ * 실제 책장 사진 31권에서 제대로 읽은 제목은 모두 88 이상이었고, 왼쪽 10권 중 틀린 넷은
+ * 69~80 이었다 ("데를", "지그기치", "주 속의 방구 다호").
+ */
+const SURE_SCORE = 85;
+
 /** 선반 높이 가운데 이 구간이 제목 구역이다 (위에서, 아래에서 뺄 비율) */
 const TITLE_ZONE_TOP = 0.22;
 const TITLE_ZONE_BOTTOM = 0.15;
@@ -350,6 +357,7 @@ async function readLines(
       return item.line.thickness * (0.5 + item.best.score / 100) * (letters <= 3 ? 0.6 : 1) * credit * series;
     };
     const main = [...withText].sort((a, b) => titleness(b) - titleness(a))[0];
+    const sure = main.best.score >= SURE_SCORE;
     const x = main.line.shelfX;
     const band = bands.find((b) => b.x0 <= x && x < b.x1) ?? nearestBand(bands, x);
     const half = Math.max(...group.map((item) => item.line.thickness));
@@ -358,12 +366,15 @@ async function readLines(
       x1: Math.round(x + half),
       color: band?.color ?? "#8a7a60",
       widthRatio: band?.widthRatio ?? 0.02,
-      text: main.best.text,
+      // 확신이 낮으면 제목칸은 비우고, 읽은 글자는 "다르게 읽기" 후보로만 둔다.
+      // 엉뚱한 제목이 채워져 있으면 사용자가 알아채지 못하고 그대로 넣는다. 빈칸은 눈에 띈다.
+      text: sure ? main.best.text : "",
       raw: main.best.raw,
       alternatives: [
+        ...(sure ? [] : [main.best.text]),
         ...main.candidates.slice(1).map((c) => c.text),
         ...withText.filter((item) => item !== main).map((item) => item.best.text),
-      ].filter((text, index, list) => text && text !== main.best.text && list.indexOf(text) === index),
+      ].filter((text, index, list) => text && (!sure || text !== main.best.text) && list.indexOf(text) === index),
       confidence: Math.min(1, main.best.score / 100),
     });
   }
@@ -413,13 +424,31 @@ function similar(a: string, b: string): boolean {
   return 1 - row[y.length] / Math.max(x.length, y.length) >= 0.6;
 }
 
-/** 같은 글자들인데 순서만 다른지. 순서까지 같으면 둘 다 맞게 읽은 것이다. */
+/**
+ * 순서가 뒤집힌 읽기인지. 돌려 쓴 글자에 쌓은 글자 재배열이 돌면 "어린왕자"를 "자왕린어"로,
+ * "이기적 유전자"를 "자전유적스이"로 읽는다. 한 글자쯤 틀려도 뒤집으면 더 닮는다.
+ */
 function sameLetters(a: string, b: string): boolean {
-  const letters = (text: string) => text.match(/[A-Za-z0-9가-힣]/g) ?? [];
-  const left = letters(a);
-  const right = letters(b);
-  if (left.length < 2 || left.join("") === right.join("")) return false;
-  return [...left].sort().join("") === [...right].sort().join("");
+  const x = a.match(/[A-Za-z0-9가-힣]/g) ?? [];
+  const y = b.match(/[A-Za-z0-9가-힣]/g) ?? [];
+  if (x.length < 2 || y.length < 2) return false;
+  const forward = ratio(x, y);
+  const backward = ratio(x, [...y].reverse());
+  return backward >= 0.6 && backward > forward;
+}
+
+function ratio(x: string[], y: string[]): number {
+  const row = Array.from({ length: y.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= x.length; i++) {
+    let diagonal = row[0];
+    row[0] = i;
+    for (let j = 1; j <= y.length; j++) {
+      const above = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, diagonal + (x[i - 1] === y[j - 1] ? 0 : 1));
+      diagonal = above;
+    }
+  }
+  return 1 - row[y.length] / Math.max(x.length, y.length);
 }
 
 /** 읽어 볼 한 가지 방법: 방향 + 흑백 반전 여부 */

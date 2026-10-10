@@ -972,3 +972,23 @@ button.badge.link {
     animation-duration: 2.4s;
   }
 }
+
+/* 비운 제목 칸 아래 "혹시 …?" 추측. 누르면 칸이 채워진다. */
+.scan-preview li {
+  flex-wrap: wrap;
+}
+
+.scan-preview .suggest {
+  flex-basis: 100%;
+  margin-left: 42px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px dashed var(--line);
+  background: transparent;
+  color: var(--accent);
+  font-size: 0.82rem;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
