@@ -287,7 +287,7 @@ async function readLines(
     // 확신이 낮으면 위아래를 바짝 자른 것도 읽어 본다. 이 인식기는 글자가 줄 높이를
     // 꽉 채울 때 잘 읽는다. "아무것 아니에요!"(76)가 높이 55% 로 자르자
     // "아무것도 아니에요!"(92)가 됐다. 돌려 쓴 글자에만 쓴다.
-    if (best.score < REVIEW_BELOW * 100 && best.deg !== 0) {
+    if (best.score < TIGHT_BELOW * 100 && best.deg !== 0) {
       const first = best;
       const tight: Candidate[] = [];
       for (const keep of TIGHT_ROWS) {
@@ -470,6 +470,12 @@ function titleParts<T extends { line: TextLine; best: Candidate }>(main: T, item
   parts.sort((p, q) => p.line.top - q.line.top);
   return downward(main) ? parts : parts.reverse();
 }
+
+/**
+ * 이보다 확신이 낮은 줄만 바짝 잘라 다시 읽는다. 확인 문턱(REVIEW_BELOW 0.92)과 따로 둔다.
+ * 0.92 까지 넓히자 "바다 OCEAN"(88)이 "바다 DCEAN"이 되고 읽는 시간이 두 배 가까이 늘었다.
+ */
+const TIGHT_BELOW = 0.85;
 
 /** 제목 뒷부분으로 이어 붙이려면 이만큼은 확실히 읽혀야 한다. 흐린 쓰레기 조각은 붙이지 않는다. */
 const JOIN_SCORE = 70;
