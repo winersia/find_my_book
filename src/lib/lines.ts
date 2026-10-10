@@ -951,3 +951,38 @@ export function spineStrip(
 /** 확인용 그림 높이 (px) */
 const PREVIEW_HEIGHT = 44;
 
+/**
+ * 책등 모양의 작은 지문. 고친 제목을 기억해 두었다가 같은 책을 다시 찍었을 때 알아보는 데 쓴다
+ * (memory.ts). 자른 그림을 아주 작게 줄이고 색 채널마다 평균 0, 퍼짐 1 로 맞춘다.
+ * 그러면 사진마다 다른 밝기·노출 차이는 지워지고 무늬만 남는다.
+ */
+export function lookOf(canvas: HTMLCanvasElement): number[] {
+  const small = document.createElement("canvas");
+  small.width = LOOK_ALONG;
+  small.height = LOOK_ACROSS;
+  const ctx = small.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return [];
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(canvas, 0, 0, LOOK_ALONG, LOOK_ACROSS);
+  const data = ctx.getImageData(0, 0, LOOK_ALONG, LOOK_ACROSS).data;
+  small.width = 0;
+  const n = LOOK_ALONG * LOOK_ACROSS;
+  const out: number[] = [];
+  for (let c = 0; c < 3; c++) {
+    let sum = 0;
+    let squares = 0;
+    for (let i = 0; i < n; i++) {
+      sum += data[i * 4 + c];
+      squares += data[i * 4 + c] ** 2;
+    }
+    const mean = sum / n;
+    const spread = Math.sqrt(Math.max(1, squares / n - mean * mean));
+    for (let i = 0; i < n; i++) out.push(Math.round(((data[i * 4 + c] - mean) / spread) * 100) / 100);
+  }
+  return out;
+}
+
+/** 지문 크기: 책등 길이 방향 × 두께 방향 */
+const LOOK_ALONG = 24;
+const LOOK_ACROSS = 6;
+

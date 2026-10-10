@@ -1019,3 +1019,10 @@ button.badge.link {
   background: transparent;
 }
 
+/* 예전에 고쳐 준 제목으로 채운 책 */
+.badge.remembered {
+  border: 1px solid rgba(107, 168, 116, 0.5);
+  color: #8fc79a;
+  background: rgba(107, 168, 116, 0.12);
+}
+
