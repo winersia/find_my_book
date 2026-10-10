@@ -277,9 +277,34 @@ async function readLines(
       }
     }
     candidates.sort((a, b) => rank(b) - rank(a));
-    const best = candidates[0];
+    let best = candidates[0];
     if (!best) continue;
     if (best.score >= WEAK_SCORE && best.deg !== 0) votes.push(best.deg);
+
+    // 확신이 낮으면 위아래를 바짝 자른 것도 읽어 본다. 이 인식기는 글자가 줄 높이를
+    // 꽉 채울 때 잘 읽는다. "아무것 아니에요!"(76)가 높이 55% 로 자르자
+    // "아무것도 아니에요!"(92)가 됐다. 돌려 쓴 글자에만 쓴다.
+    if (best.score < REVIEW_BELOW * 100 && best.deg !== 0) {
+      const first = best;
+      const tight: Candidate[] = [];
+      for (const keep of TIGHT_ROWS) {
+        const variant = line.crop(first.deg);
+        const cropped = centerRows(variant.canvas, keep);
+        releaseVariants([variant]);
+        try {
+          tight.push({ ...(await readVariant({ deg: first.deg, invert: false, canvas: cropped }, trim)), deg: first.deg });
+        } finally {
+          cropped.width = 0;
+        }
+      }
+      candidates = [...candidates, ...tight].sort((a, b) => rank(b) - rank(a));
+      // 바짝 자르면 틀린 읽기의 확신도 같이 오른다 ("아무것 아니에요!"가 91).
+      // 제목이 바뀌었으면 확신은 처음 것을 넘지 않게 둔다. 사용자가 확인하게 남는다.
+      if (candidates[0] !== first && candidates[0].text !== first.text) {
+        candidates[0] = { ...candidates[0], score: Math.min(candidates[0].score, first.score) };
+      }
+      best = candidates[0];
+    }
     if (settled === null && votes.length >= DIRECTION_PROBE) settled = majority(votes);
     read.push({ line, best, candidates });
   }
@@ -472,6 +497,19 @@ function ratio(x: string[], y: string[]): number {
     }
   }
   return 1 - row[y.length] / Math.max(x.length, y.length);
+}
+
+/** 확신이 낮은 줄을 다시 읽을 때 남길 높이 (가운데 기준 비율) */
+const TIGHT_ROWS = [0.55];
+
+/** 캔버스의 가운데 줄만 남긴다. */
+function centerRows(source: HTMLCanvasElement, keep: number): HTMLCanvasElement {
+  const height = Math.max(1, Math.round(source.height * keep));
+  const out = document.createElement("canvas");
+  out.width = source.width;
+  out.height = height;
+  out.getContext("2d")?.drawImage(source, 0, (source.height - height) / 2, source.width, height, 0, 0, source.width, height);
+  return out;
 }
 
 /** 읽어 볼 한 가지 방법: 방향 + 흑백 반전 여부 */
