@@ -6,7 +6,7 @@ import {
   type SpineBand,
   type SpineVariant,
 } from "./segment";
-import { findTextLines, groupLines, type GroupOptions, type LineOptions, type TextLine } from "./lines";
+import { findTextLines, groupLines, withTextlessBooks, type GroupOptions, type LineOptions, type TextLine } from "./lines";
 import { yieldToPaint } from "./yield";
 import { detectText, hasModels, loadModels, readLine, releaseModels, watchModels } from "./ppocr";
 
@@ -191,6 +191,10 @@ export async function readShelf(
  */
 const DETECT_SIDE = 2560;
 
+/** 선반 높이 가운데 이 구간이 제목 구역이다 (위에서, 아래에서 뺄 비율) */
+const TITLE_ZONE_TOP = 0.22;
+const TITLE_ZONE_BOTTOM = 0.15;
+
 /**
  * 저자 줄에 들어가는 말. 제목을 고를 때 이 줄은 뒤로 뺀다.
  * "씀"은 띄어 쓴 것만 본다. 붙여 두면 "알쏭달쏭"을 "알씀달"로 잘못 읽은 제목이 걸린다.
@@ -269,16 +273,34 @@ async function readLines(
 
   // 한 권으로 묶기. 두 줄 사이에 책등 경계가 없으면 같은 책이다 (lines.ts).
   const byLine = new Map(read.map((item) => [item.line, item]));
-  const groups = groupLines(image, lines, groupOptions)
-    .map((group) => group.map((line) => byLine.get(line)).filter((item) => item !== undefined))
-    .filter((group) => group.length > 0);
+
+  // 제목은 책등 가운데쯤에 있고, 시리즈·출판사 라벨은 위아래 끝에 있다. 선반 높이에서
+  // 제목 구역을 정하고, 그 구역에 걸친 줄만 제목 후보로 본다. 위아래 끝 줄만 있는 묶음은
+  // 이웃 책에서 떨어져 나온 라벨이라 책으로 세지 않는다.
+  const tops = lines.map((line) => line.top).sort((p, q) => p - q);
+  const bottoms = lines.map((line) => line.bottom).sort((p, q) => p - q);
+  const shelfTop = tops[Math.floor(tops.length * 0.1)] ?? 0;
+  const shelfBottom = bottoms[Math.floor(bottoms.length * 0.9)] ?? image.height;
+  const zoneTop = shelfTop + (shelfBottom - shelfTop) * TITLE_ZONE_TOP;
+  const zoneBottom = shelfBottom - (shelfBottom - shelfTop) * TITLE_ZONE_BOTTOM;
+  const inTitleZone = (line: TextLine) => line.bottom > zoneTop && line.top < zoneBottom;
+
+  const lineGroups = groupLines(image, lines, groupOptions).filter((group) => group.some(inTitleZone));
+  // 글자가 안 보이는 책도 자리를 지킨다. 빠뜨리면 그 뒤 책이 한 칸씩 당겨진다.
+  const slots = withTextlessBooks(image, lineGroups, groupOptions);
+  const groups = slots.map((slot) =>
+    slot.kind === "blank"
+      ? slot
+      : slot.lines.map((line) => byLine.get(line)).filter((item) => item !== undefined),
+  );
+  const textGroups = groups.filter((group): group is (typeof read)[number][] => Array.isArray(group));
 
   // 여러 책등에 되풀이되는 글자는 시리즈 이름이다 ("이야기 솜사탕", "안녕 마음아",
   // "드림차일드애플"). 굵고 또렷하게 찍혀 있어 굵기로 고르면 제목을 이긴다.
   const repeated = new Set<(typeof read)[number]>();
-  groups.forEach((group, index) => {
+  textGroups.forEach((group, index) => {
     for (const item of group) {
-      const others = groups.filter(
+      const others = textGroups.filter(
         (other, k) => k !== index && other.some((o) => similar(o.best.text, item.best.text)),
       );
       if (others.length > 0) repeated.add(item);
@@ -286,9 +308,34 @@ async function readLines(
   });
 
   const readings: SpineReading[] = [];
+  const blankReading = (x: number, half: number): SpineReading => {
+    const band = bands.find((b) => b.x0 <= x && x < b.x1) ?? nearestBand(bands, x);
+    return {
+      x0: Math.round(x - half),
+      x1: Math.round(x + half),
+      color: band?.color ?? "#8a7a60",
+      widthRatio: (half * 2) / image.width,
+      text: "",
+      raw: "",
+      alternatives: [],
+      confidence: 0,
+    };
+  };
   for (const group of groups) {
-    const withText = group.filter((item) => item.best.text);
-    if (!withText.length) continue;
+    if (!Array.isArray(group)) {
+      readings.push(blankReading(group.x, group.width / 2));
+      continue;
+    }
+    // 제목 후보는 제목 구역에 걸친 줄뿐이다. 위아래 끝 라벨은 제목이 될 수 없다.
+    const withText = group.filter((item) => item.best.text && inTitleZone(item.line));
+    if (!withText.length) {
+      // 제목 줄이 있는데 못 읽었다. 라벨로 채우지 말고 비워 둔다. 사용자가 적는다.
+      const x = group.reduce((sum, item) => sum + item.line.shelfX, 0) / group.length;
+      const blank = blankReading(x, Math.max(...group.map((item) => item.line.thickness)));
+      blank.alternatives = group.map((item) => item.best.text).filter(Boolean);
+      readings.push(blank);
+      continue;
+    }
     // 제목은 가장 굵은 글자다. 다만 책등 아래 출판사 로고("WON", "북뱅크")도 굵다.
     // 로고는 두세 자뿐이라 짧은 줄만 깎는다. 길이를 더 크게 치면 이번에는 길고 또렷한
     // 저자 줄("글·그림 … 옮김 …")이 제목을 이겼다.
@@ -303,9 +350,6 @@ async function readLines(
       return item.line.thickness * (0.5 + item.best.score / 100) * (letters <= 3 ? 0.6 : 1) * credit * series;
     };
     const main = [...withText].sort((a, b) => titleness(b) - titleness(a))[0];
-    // 두 글자 남짓을 겨우 읽은 조각은 책이 아니라 로고나 무늬다. 목록만 어지럽힌다.
-    const mainLetters = (main.best.text.match(/[A-Za-z0-9가-힣]/g) ?? []).length;
-    if (mainLetters <= 2 && main.best.score < 30) continue;
     const x = main.line.shelfX;
     const band = bands.find((b) => b.x0 <= x && x < b.x1) ?? nearestBand(bands, x);
     const half = Math.max(...group.map((item) => item.line.thickness));

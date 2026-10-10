@@ -602,10 +602,73 @@ function lumaOf(source: HTMLCanvasElement): Float32Array {
   return out;
 }
 
+/** 책등 경계로 볼 최소 밝기 변화 (0~255, 이웃 화소 차) */
+const MIN_EDGE = 6;
+
 /** 경계를 잴 세로 범위. 선반에 책이 서 있는 높이 안이어야 한다. */
 export interface ShelfSpan {
   top: number;
   bottom: number;
+}
+
+/**
+ * 두 줄 사이 경계 봉우리의 높이 비. 벤치에서 문턱을 고를 때도 쓴다.
+ *
+ * 글자가 있는 행은 뺀다. 큰 제목의 획은 세로로 길어 경계처럼 보이고
+ * ("신비한 괴물 백과"의 제목과 옆 줄이 갈라졌다), 진짜 경계를 가리기도 한다.
+ * 책등 경계는 글자 없는 위아래까지 이어지므로 거기서 잰다.
+ */
+/** 두 줄 사이를 칸으로 나눠, 칸마다 행별 밝기 변화의 중앙값을 잰다. */
+function edgeProfile(
+  luma: Float32Array,
+  width: number,
+  height: number,
+  a: TextLine,
+  b: TextLine,
+  shelf: ShelfSpan,
+  steps: number,
+): { profile: number[]; rows: number; span: number } {
+  const extend = 0.5 * Math.max(a.length, b.length);
+  const top = Math.max(0, Math.floor(Math.max(shelf.top, Math.min(a.top, b.top) - extend)));
+  const bottom = Math.min(height - 1, Math.ceil(Math.min(shelf.bottom, Math.max(a.bottom, b.bottom) + extend)));
+  const pad = Math.max(a.thickness, b.thickness);
+  const hasText = (y: number, line: TextLine) => y >= line.top - pad && y <= line.bottom + pad;
+  // 칸마다 행별 밝기 변화를 모은다. 행 평균이 아니라 중앙값으로 줄인다.
+  // 책등 경계는 위에서 아래까지 거의 모든 행에 있지만, 배지·별 무늬 같은 장식의 테두리는
+  // 몇 행에만 있다. 평균을 쓰면 장식이 경계처럼 보여 ChildApple 책의 위쪽 라벨이 제 책에서
+  // 떨어져 나가 따로 한 권이 됐다. 경계가 행마다 한두 칸 흔들려도 잡히도록 이웃 칸까지 본다.
+  const measure = (textRows: boolean, margin: number) => {
+    const samples: number[][] = Array.from({ length: steps + 1 }, () => []);
+    let rows = 0;
+    let span = 0;
+    for (let y = top; y <= bottom; y += 2) {
+      if (!textRows && (hasText(y, a) || hasText(y, b))) continue;
+      const left = a.cx + a.lean * (y - a.cy) + a.thickness * margin;
+      const right = b.cx + b.lean * (y - b.cy) - b.thickness * margin;
+      if (right - left < 2) continue;
+      rows++;
+      span += right - left;
+      const row = new Float32Array(steps + 1);
+      for (let k = 0; k <= steps; k++) {
+        const x = Math.round(left + ((right - left) * k) / steps);
+        if (x < 1 || x >= width - 1) continue;
+        row[k] = Math.abs(luma[y * width + x + 1] - luma[y * width + x - 1]);
+      }
+      for (let k = 0; k <= steps; k++) {
+        samples[k].push(Math.max(row[k], row[Math.max(0, k - 1)], row[Math.min(steps, k + 1)]));
+      }
+    }
+    const profile = samples.map((values) => {
+      if (!values.length) return 0;
+      values.sort((p, q) => p - q);
+      return values[Math.floor(values.length / 2)];
+    });
+    return { profile, rows, span: rows ? span / rows : 0 };
+  };
+  // 글자 없는 행으로 재는 것이 먼저다. 제목이 책등을 거의 다 채워 그런 행이 모자라면
+  // 글자 행까지 쓰되, 글자 획을 피하도록 여백을 넓힌다.
+  const first = measure(false, 0.5);
+  return first.rows >= 20 ? first : measure(true, 0.9);
 }
 
 /**
@@ -623,38 +686,116 @@ export function boundaryScore(
   b: TextLine,
   shelf: ShelfSpan,
 ): number {
-  const extend = 0.5 * Math.max(a.length, b.length);
-  const top = Math.max(0, Math.floor(Math.max(shelf.top, Math.min(a.top, b.top) - extend)));
-  const bottom = Math.min(height - 1, Math.ceil(Math.min(shelf.bottom, Math.max(a.bottom, b.bottom) + extend)));
-  const pad = Math.max(a.thickness, b.thickness);
-  const hasText = (y: number, line: TextLine) => y >= line.top - pad && y <= line.bottom + pad;
-  const steps = 24;
-  const measure = (textRows: boolean, margin: number) => {
-    const profile = new Float32Array(steps + 1);
-    let rows = 0;
-    for (let y = top; y <= bottom; y += 2) {
-      if (!textRows && (hasText(y, a) || hasText(y, b))) continue;
-      const left = a.cx + a.lean * (y - a.cy) + a.thickness * margin;
-      const right = b.cx + b.lean * (y - b.cy) - b.thickness * margin;
-      if (right - left < 2) continue;
-      rows++;
-      for (let k = 0; k <= steps; k++) {
-        const x = Math.round(left + ((right - left) * k) / steps);
-        if (x < 1 || x >= width - 1) continue;
-        profile[k] += Math.abs(luma[y * width + x + 1] - luma[y * width + x - 1]);
+  const { profile, rows } = edgeProfile(luma, width, height, a, b, shelf, 24);
+  if (rows < 8) return 0;
+  const sorted = [...profile].sort((p, q) => p - q);
+  const peak = sorted[sorted.length - 1];
+  // 바탕이 고르면 중앙값이 0 에 가까워 비가 터진다. 밝기 변화가 이만큼은 돼야 경계다.
+  if (peak < MIN_EDGE) return 0;
+  const median = Math.max(sorted[Math.floor(sorted.length / 2)], 1);
+  return peak / median;
+}
+
+/**
+ * 이웃한 두 책 사이에 글자 없는 책이 몇 권 끼어 있는지 센다.
+ *
+ * 책등에 글자가 안 보이는 책(어두운 책등, 뒤로 물러선 책)은 글자 줄로는 못 찾는다.
+ * 빠뜨리면 그 뒤 책들이 한 칸씩 당겨져 순서와 권수가 같이 틀린다. 두 책 사이를 훑어
+ * 책등 경계가 두 개 이상 나오면, 경계 사이마다 글자 없는 책이 한 권 있다.
+ * 책 사이 그림자는 바짝 붙은 경계 두 개로 보이므로, 가장 얇은 책보다 가까운 경계는 하나로 친다.
+ * 돌려주는 값은 끼어 있는 책마다 선반 가운데 높이의 x 와 두께다.
+ */
+export function booksBetween(
+  luma: Float32Array,
+  rgb: Uint8ClampedArray,
+  width: number,
+  height: number,
+  a: TextLine,
+  b: TextLine,
+  shelf: ShelfSpan,
+  options: { edgeRatio: number; minSpine: number; minBlank: number; maxSpine: number },
+): { x: number; width: number }[] {
+  const gap = b.shelfX - a.shelfX;
+  const steps = Math.max(8, Math.round(gap / 2));
+  const { profile, rows, span } = edgeProfile(luma, width, height, a, b, shelf, steps);
+  if (rows < 8 || span < options.minSpine * 1.5) return [];
+  const sorted = [...profile].sort((p, q) => p - q);
+  const median = Math.max(sorted[Math.floor(sorted.length / 2)], 1);
+  const px = span / steps;
+  const peaks: number[] = [];
+  for (let k = 1; k < steps; k++) {
+    const v = profile[k];
+    if (v < MIN_EDGE || v < options.edgeRatio * median) continue;
+    if (v < profile[k - 1] || v < profile[k + 1]) continue;
+    const last = peaks[peaks.length - 1];
+    if (last !== undefined && (k - last) * px < options.minSpine) {
+      if (v > profile[last]) peaks[peaks.length - 1] = k;
+      continue;
+    }
+    peaks.push(k);
+  }
+  if (peaks.length < 2) return [];
+
+  // 경계로 나뉜 구간마다 색을 잰다. 이웃 책과 색이 같으면 그 책의 일부다.
+  // 둥근 책등 가장자리나 접힌 선도 밝기 경계로 잡힌다. 음영만 다르고 색은 같으므로
+  // 밝기를 뺀 색 비율로 견준다. 글자 없는 진짜 책(짙은 갈색 "동물 도미노")은 양옆과 색이 달랐다.
+  const top = Math.max(0, Math.floor(Math.min(a.top, b.top)));
+  const bottom = Math.min(height - 1, Math.ceil(Math.max(a.bottom, b.bottom)));
+  const colorOf = (from: number, to: number) => {
+    const rs: number[] = [];
+    const gs: number[] = [];
+    const ls: number[] = [];
+    const inset = Math.max(1, Math.round((to - from) * 0.2));
+    for (let y = top; y <= bottom; y += 4) {
+      const left = a.cx + a.lean * (y - a.cy) + a.thickness * 0.5;
+      const right = b.cx + b.lean * (y - b.cy) - b.thickness * 0.5;
+      const scale = (right - left) / steps;
+      for (let k = from + inset; k <= to - inset; k++) {
+        const x = Math.round(left + k * scale);
+        if (x < 0 || x >= width) continue;
+        const i = (y * width + x) * 4;
+        const sum = rgb[i] + rgb[i + 1] + rgb[i + 2] + 1;
+        rs.push(rgb[i] / sum);
+        gs.push(rgb[i + 1] / sum);
+        ls.push(sum / 3);
       }
     }
-    return { profile, rows };
+    const median = (values: number[]) => values.sort((p, q) => p - q)[Math.floor(values.length / 2)] ?? 0;
+    return [median(rs), median(gs), median(ls)];
   };
-  // 글자 없는 행으로 재는 것이 먼저다. 제목이 책등을 거의 다 채워 그런 행이 모자라면
-  // 글자 행까지 쓰되, 글자 획을 피하도록 여백을 넓힌다.
-  let { profile, rows } = measure(false, 0.5);
-  if (rows < 20) ({ profile, rows } = measure(true, 0.9));
-  if (rows < 8) return 0;
-  const sorted = Array.from(profile).sort((p, q) => p - q);
-  const median = sorted[Math.floor(sorted.length / 2)] || 1e-6;
-  return sorted[sorted.length - 1] / median;
+  const cuts = [0, ...peaks, steps];
+  const colors = cuts.slice(1).map((to, i) => colorOf(cuts[i], to));
+  // 색 비율만 보면 어두운 색이 회색 쪽으로 몰린다. 그늘진 갈색 책등(밝기 34)과 흰 책등
+  // (밝기 244)이 색 비율로는 0.058 차이라 같은 책이 됐다. 밝기 차가 크면 따로 본다.
+  // 같은 책등의 음영 차는 1.1배 남짓이었다.
+  const same = (p: number[], q: number[]) =>
+    Math.hypot(p[0] - q[0], p[1] - q[1]) < SAME_COLOR &&
+    Math.max(p[2], q[2]) / Math.max(1, Math.min(p[2], q[2])) < SAME_BRIGHTNESS;
+
+  // 구간을 이웃과 색이 같으면 합친다. 첫 묶음은 a 의 책, 마지막 묶음은 b 의 책이다.
+  const runs: { from: number; to: number; color: number[] }[] = [];
+  colors.forEach((color, i) => {
+    const last = runs[runs.length - 1];
+    if (last && same(last.color, color)) last.to = cuts[i + 1];
+    else runs.push({ from: cuts[i], to: cuts[i + 1], color });
+  });
+  if (runs.length < 3) return [];
+
+  const start = a.shelfX + a.thickness * 0.5;
+  return runs.slice(1, -1)
+    .map((run) => ({ left: start + run.from * px, right: start + run.to * px }))
+    .filter((run) => run.right - run.left >= options.minBlank && run.right - run.left <= options.maxSpine)
+    .map((run) => ({ x: (run.left + run.right) / 2, width: run.right - run.left }));
 }
+
+/**
+ * 색 비율이 이만큼 안이면 같은 책등으로 본다 (r/(r+g+b), g/(r+g+b) 거리).
+ * "바다 OCEAN" 책등의 접힌 선 양쪽 노란색이 0.046 떨어져 있었다. 그늘진 갈색 책
+ * "동물 도미노"는 양옆과 0.12 넘게 달랐다.
+ */
+const SAME_COLOR = 0.06;
+/** 밝기가 이 배수 넘게 다르면 색 비율이 비슷해도 다른 책등이다 */
+const SAME_BRIGHTNESS = 2.5;
 
 function boundaryBetween(
   luma: Float32Array,
@@ -669,4 +810,52 @@ function boundaryBetween(
   // 두 책등의 여백만큼은 떨어져 있다. 반대로 두면 책등 위 시리즈 라벨이 제목과
   // 갈라져 따로 한 권이 됐다.
   return boundaryScore(luma, width, height, a, b, shelf) >= ratio;
+}
+
+/** 책장 한 칸의 책 하나. 글자 줄이 있는 책이거나, 글자 없이 경계로만 찾은 책이다. */
+export type ShelfSlot = { kind: "text"; lines: TextLine[] } | { kind: "blank"; x: number; width: number };
+
+/**
+ * 묶은 책 사이사이에 글자 없는 책을 끼워 넣는다 (booksBetween).
+ * 순서는 선반 가운데 높이의 x 순서 그대로다.
+ */
+export function withTextlessBooks(
+  source: HTMLCanvasElement,
+  groups: TextLine[][],
+  options: GroupOptions = {},
+): ShelfSlot[] {
+  const slots: ShelfSlot[] = [];
+  if (!groups.length) return slots;
+  const luma = lumaOf(source);
+  const rgb = source.getContext("2d", { willReadFrequently: true })?.getImageData(0, 0, source.width, source.height).data;
+  if (!rgb) return groups.map((lines) => ({ kind: "text", lines }));
+  const all = groups.flat();
+  const tops = all.map((line) => line.top).sort((p, q) => p - q);
+  const bottoms = all.map((line) => line.bottom).sort((p, q) => p - q);
+  const shelf = { top: tops[Math.floor(tops.length * 0.1)], bottom: bottoms[Math.floor(bottoms.length * 0.9)] };
+  const centers = groups.map(mean);
+  const spacing = centers.slice(1).map((x, i) => x - centers[i]).sort((p, q) => p - q);
+  const book = spacing[Math.floor(spacing.length / 2)] ?? 40;
+  const edgeRatio = options.edgeRatio ?? 2.4;
+
+  groups.forEach((group, index) => {
+    slots.push({ kind: "text", lines: group });
+    const next = groups[index + 1];
+    if (!next) return;
+    const a = group.reduce((p, q) => (q.shelfX > p.shelfX ? q : p));
+    const b = next.reduce((p, q) => (q.shelfX < p.shelfX ? q : p));
+    for (const blank of booksBetween(luma, rgb, source.width, source.height, a, b, shelf, {
+      edgeRatio,
+      minSpine: book * 0.35,
+      // 글자 없는 책으로 세려면 이만큼은 두꺼워야 한다. 휜 책등의 그늘진 옆면(19px)이 같은 색
+      // 같은 밝기 차로 "동물 도미노"(42px)와 구별되지 않아, 두께로 가른다. 아주 얇은 글자 없는
+      // 책은 놓칠 수 있지만, 없는 책을 지어내는 쪽이 사용자에게 더 나쁘다.
+      minBlank: book * 0.6,
+      // 표지가 보이게 꽂힌 책은 넓은 표지면이 글자 없는 책처럼 보인다. 책 한 권은 이보다 얇다.
+      maxSpine: book * 3,
+    })) {
+      slots.push({ kind: "blank", ...blank });
+    }
+  });
+  return slots;
 }
