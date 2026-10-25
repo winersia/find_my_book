@@ -351,6 +351,11 @@ export default function App() {
               이 책장 지우기
             </button>
           </div>
+
+          {/* 배포된 사이트가 어느 버전인지 휴대폰에서 바로 보이게 (CHANGELOG.md) */}
+          <p className="app-version" data-testid="app-version">
+            버전 {__APP_VERSION__}
+          </p>
         </details>
       </main>
 

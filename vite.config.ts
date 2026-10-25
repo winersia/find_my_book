@@ -3,6 +3,8 @@ import path from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
+const { version } = JSON.parse(fs.readFileSync("package.json", "utf8")) as { version: string };
+
 /**
  * 개발 서버에서 public/ort 를 손대지 않고 그대로 내준다.
  *
@@ -39,6 +41,8 @@ export default defineConfig({
    * 로컬에서는 그냥 루트다.
    */
   base: process.env.VITE_BASE || "/",
+  // 앱에 보여 줄 버전. 번호는 package.json 하나에서만 관리한다 (CHANGELOG.md 의 버전 규칙).
+  define: { __APP_VERSION__: JSON.stringify(version) },
   // OCR은 전부 브라우저에서 돈다. 백엔드도 API 키도 없다.
   server: { host: true, port: 5173 },
   build: { outDir: "dist" },
