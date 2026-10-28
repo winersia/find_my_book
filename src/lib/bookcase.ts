@@ -14,6 +14,11 @@ export interface Bookcase {
   rows: number;
   /** 길이는 rows * columns. 왼쪽 위부터 행 우선으로 채운다. */
   slots: Slot[];
+  /**
+   * 한 칸의 가로 길이가 높이의 몇 배인지. 긴 칸은 몇 번에 나눠 찍을지가 여기서 정해진다
+   * (shotsForSlot). 이 값이 생기기 전에 만든 책장에는 없다. 그때는 DEFAULT_SLOT_ASPECT 로 본다.
+   */
+  slotAspect?: number;
   createdAt: string;
 }
 
@@ -54,6 +59,41 @@ export const MIN_COLUMNS = 1;
 export const MAX_COLUMNS = 12;
 export const MIN_ROWS = 1;
 export const MAX_ROWS = 8;
+/** 칸 모양 (가로 ÷ 높이). 흔한 책장 한 칸은 가로가 높이의 두 배 남짓이다. */
+export const DEFAULT_SLOT_ASPECT = 2;
+export const MIN_SLOT_ASPECT = 1;
+export const MAX_SLOT_ASPECT = 8;
+export const SLOT_ASPECT_STEP = 0.5;
+
+/**
+ * 사진 한 장에 담을 칸 너비는 칸 높이의 이만큼까지.
+ *
+ * 휴대폰 카메라는 4:3 이라, 이보다 긴 칸을 한 장에 담으면 책 높이가 화면 세로의 절반도 안 되고
+ * 책등 하나에 실리는 화소가 모자라 제목이 무너진다. 실제 책장 사진 한 장(책이 화면 세로의 약
+ * 60%)은 29권 중 19권을 맞게 읽었고, 같은 칸을 두 배 넓게 이어 붙인 사진(약 30%)은 58권 중
+ * 30권으로 떨어졌다. 사진 한 장으로 정한 값이다 (docs/시나리오.md 의 M1 에서 다시 잰다).
+ */
+export const SHOT_ASPECT = 2;
+
+export function slotAspectOf(bookcase: Pick<Bookcase, "slotAspect">): number {
+  const aspect = bookcase.slotAspect;
+  return typeof aspect === "number" && Number.isFinite(aspect)
+    ? clamp(aspect, MIN_SLOT_ASPECT, MAX_SLOT_ASPECT)
+    : DEFAULT_SLOT_ASPECT;
+}
+
+/** 이 모양의 칸을 몇 번에 나눠 찍어야 하는지. 왼쪽부터 같은 너비로 나눈다. */
+export function shotsForSlot(aspect: number): number {
+  return Math.max(1, Math.ceil(aspect / SHOT_ASPECT - 1e-9));
+}
+
+/** 나눠 찍을 때 이번 장이 칸의 어디인지. part 는 1부터 센다. */
+export function partLabel(part: number, parts: number): string {
+  if (parts <= 1) return "칸 전체";
+  if (parts === 2) return part === 1 ? "왼쪽 절반" : "오른쪽 절반";
+  if (parts === 3) return ["왼쪽", "가운데", "오른쪽"][part - 1] + " 3분의 1";
+  return `왼쪽부터 ${part}번째 ${parts}분의 1`;
+}
 /** 신뢰도가 이 아래면 "확인 필요"로 표시한다 */
 export const LOW_CONFIDENCE = 0.6;
 
@@ -81,7 +121,12 @@ export function emptySlot(): Slot {
   return { books: [] };
 }
 
-export function createBookcase(name: string, columns: number, rows: number): Bookcase {
+export function createBookcase(
+  name: string,
+  columns: number,
+  rows: number,
+  slotAspect = DEFAULT_SLOT_ASPECT,
+): Bookcase {
   const safeColumns = clamp(columns, MIN_COLUMNS, MAX_COLUMNS);
   const safeRows = clamp(rows, MIN_ROWS, MAX_ROWS);
   return {
@@ -90,6 +135,7 @@ export function createBookcase(name: string, columns: number, rows: number): Boo
     columns: safeColumns,
     rows: safeRows,
     slots: Array.from({ length: safeColumns * safeRows }, emptySlot),
+    slotAspect: clamp(slotAspect, MIN_SLOT_ASPECT, MAX_SLOT_ASPECT),
     createdAt: new Date().toISOString(),
   };
 }

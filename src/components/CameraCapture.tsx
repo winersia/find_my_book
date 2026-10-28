@@ -8,6 +8,8 @@ interface Props {
   remaining: number;
   /** 화면이 열리자마자 카메라를 켠다. "촬영하기"를 눌렀으면 카메라가 켜져 있는 게 당연하다. */
   autoStart?: boolean;
+  /** 긴 칸을 나눠 찍을 때 안내 틀에 쓸 말 ("1/2 · 왼쪽 절반을 꽉 채워 주세요"). 없으면 칸 전체. */
+  guide?: string;
 }
 
 /**
@@ -15,7 +17,7 @@ interface Props {
  * 셔터는 사진 앱과 같은 자리(아래 가운데)에 크게 둔다. 화면의 안내 틀은
  * "이 안에 칸을 꽉 채우라"는 말을 글 대신 보여 준다.
  */
-export function CameraCapture({ onCapture, disabled, remaining, autoStart = false }: Props) {
+export function CameraCapture({ onCapture, disabled, remaining, autoStart = false, guide }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -125,9 +127,14 @@ export function CameraCapture({ onCapture, disabled, remaining, autoStart = fals
         />
         {active ? (
           <div className="frame-guide" aria-hidden="true">
-            <span>
-              칸을 꽉 채워 주세요
-              {maxBooks > 0 && ` · 한 번에 ${maxBooks}권까지`}
+            {/* 나눠 찍을 때는 권수 한도 대신 칸의 어디를 찍을지를 말한다. 사용자는 권수를 세지 않는다. */}
+            <span data-testid="frame-guide">
+              {guide ?? (
+                <>
+                  칸을 꽉 채워 주세요
+                  {maxBooks > 0 && ` · 한 번에 ${maxBooks}권까지`}
+                </>
+              )}
             </span>
           </div>
         ) : (
@@ -135,7 +142,7 @@ export function CameraCapture({ onCapture, disabled, remaining, autoStart = fals
             <span className="viewport-icon" aria-hidden="true">
               📷
             </span>
-            <p className="hint">칸 하나를 정면에서</p>
+            <p className="hint">{guide ?? "칸 하나를 정면에서"}</p>
           </div>
         )}
       </div>

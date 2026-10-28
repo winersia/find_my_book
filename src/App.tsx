@@ -8,6 +8,7 @@ import { WarmupStrip } from "./components/WarmupStrip";
 import {
   DEFAULT_COLUMNS,
   DEFAULT_ROWS,
+  DEFAULT_SLOT_ASPECT,
   addBook,
   clearSlot,
   countBooks,
@@ -18,6 +19,8 @@ import {
   moveBookToSlot,
   removeBook,
   resizeBookcase,
+  shotsForSlot,
+  slotAspectOf,
   saveBookcases,
   setSlotBooks,
   slotLabel,
@@ -129,14 +132,14 @@ export default function App() {
   }, []);
 
   const confirmSetup = useCallback(
-    (name: string, columns: number, rows: number) => {
+    (name: string, columns: number, rows: number, slotAspect: number) => {
       if (resizing && current) {
-        commit(current.id, (bookcase) => ({ ...resizeBookcase(bookcase, columns, rows), name }));
+        commit(current.id, (bookcase) => ({ ...resizeBookcase(bookcase, columns, rows), name, slotAspect }));
         setResizing(false);
         setSelected(null);
         setToast({ message: "책장 칸 수를 바꿨어요." });
       } else {
-        const bookcase = createBookcase(name, columns, rows);
+        const bookcase = createBookcase(name, columns, rows, slotAspect);
         setBookcases((previous) => {
           const next = [...previous, bookcase];
           saveBookcases(next);
@@ -191,6 +194,7 @@ export default function App() {
             defaultName={editing?.name ?? (bookcases.length > 0 ? `책장 ${bookcases.length + 1}` : "내 책장")}
             defaultColumns={editing?.columns ?? DEFAULT_COLUMNS}
             defaultRows={editing?.rows ?? DEFAULT_ROWS}
+            defaultSlotAspect={editing ? slotAspectOf(editing) : DEFAULT_SLOT_ASPECT}
             onConfirm={confirmSetup}
             onCancel={
               bookcases.length > 0
@@ -365,6 +369,7 @@ export default function App() {
             label={slotLabel(current, selected)}
             existingCount={current.slots[selected].books.length}
             enrich={settings.enrich}
+            parts={shotsForSlot(slotAspectOf(current))}
             onApply={applyScan}
             onClose={() => setScanning(false)}
           />

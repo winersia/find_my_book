@@ -247,8 +247,14 @@ effort.startedAt = Date.now();
 // 1. 첫 화면은 책장 설정, 기본 8×2
 const defaults = await page.$$eval(".number-field input", (els) => els.map((e) => e.value));
 const previewSlots = await page.$$eval('[data-testid="setup-preview"] .slot', (els) => els.length);
-check("첫 화면이 책장 설정이고 기본이 8×2다", defaults.join("×") === "8×2" && previewSlots === 16,
-  `${defaults.join("×")} · 미리보기 ${previewSlots}칸`);
+// 셋째 칸은 칸 모양(가로가 높이의 몇 배). 기본 2배는 한 번에 찍는다.
+const [columnsValue, rowsValue, aspectValue] = defaults;
+const defaultShots = await page.$eval('[data-testid="setup-shots"]', (el) => Number(el.dataset.shots));
+check(
+  "첫 화면이 책장 설정이고 기본이 8×2, 칸 모양 2배(한 번에 찍기)다",
+  `${columnsValue}×${rowsValue}` === "8×2" && aspectValue === "2" && defaultShots === 1 && previewSlots === 16,
+  `${columnsValue}×${rowsValue} · ${aspectValue}배 · ${defaultShots}번에 · 미리보기 ${previewSlots}칸`,
+);
 
 // 2. 숫자를 바꾸면 미리보기가 따라 바뀐다
 await page.click('button[aria-label="칸 수 줄이기"]');
