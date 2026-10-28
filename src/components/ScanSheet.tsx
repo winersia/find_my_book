@@ -13,7 +13,7 @@ interface Props {
   existingCount: number;
   enrich: boolean;
   /**
-   * 이 칸을 몇 번에 나눠 찍을지 (책장 설정의 칸 모양에서 정해진다). 2 이상이면 장마다 칸의
+   * 이 칸을 몇 번에 나눠 찍을지 (책장 설정의 칸 크기와 책 두께에서 정해진다, bookcase.ts 의 shotsFor). 2 이상이면 장마다 칸의
    * 어디를 찍을지 안내하고, 다 찍기 전에는 [이어서 찍기]를 먼저 권한다.
    */
   parts?: number;

@@ -58,6 +58,8 @@ async function measure(label) {
 await page.goto(APP_URL, { waitUntil: "networkidle" });
 await measure("설정");
 
+// 책 두께를 골라야 만들 수 있다. 보통 두께 · 기본 칸(40×30cm)은 한 번에 찍는다.
+await page.click('[data-testid="book-kind-normal"]');
 await page.click("text=이 책장 만들기");
 await page.waitForSelector('[data-testid="bookcase"]');
 await measure("책장");

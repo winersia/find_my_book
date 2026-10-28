@@ -1,4 +1,4 @@
-import { LOW_CONFIDENCE, shotsForSlot, slotAspectOf, slotLabel, type Bookcase, type ShelfBook } from "../lib/bookcase";
+import { LOW_CONFIDENCE, shotsFor, slotLabel, type Bookcase, type ShelfBook } from "../lib/bookcase";
 
 interface Props {
   bookcase: Bookcase;
@@ -26,7 +26,7 @@ export function SlotPanel({
 }: Props) {
   const slot = bookcase.slots[index];
   const label = slotLabel(bookcase, index);
-  const shots = shotsForSlot(slotAspectOf(bookcase));
+  const shots = shotsFor(bookcase);
 
   return (
     <section className="slot-panel" data-testid="slot-panel">

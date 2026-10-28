@@ -247,13 +247,14 @@ effort.startedAt = Date.now();
 // 1. 첫 화면은 책장 설정, 기본 8×2
 const defaults = await page.$$eval(".number-field input", (els) => els.map((e) => e.value));
 const previewSlots = await page.$$eval('[data-testid="setup-preview"] .slot', (els) => els.length);
-// 셋째 칸은 칸 모양(가로가 높이의 몇 배). 기본 2배는 한 번에 찍는다.
-const [columnsValue, rowsValue, aspectValue] = defaults;
-const defaultShots = await page.$eval('[data-testid="setup-shots"]', (el) => Number(el.dataset.shots));
+// 직접 맞추기가 기본이다: 가로 8 × 세로 2, 칸 40×30cm. 책 두께는 사용자가 꼭 고른다.
+const [columnsValue, rowsValue, widthValue, heightValue] = defaults;
+const kindChosen = await page.$$eval('[data-testid="book-kinds"] [aria-pressed="true"]', (els) => els.length);
+const waitsForKind = await page.$eval('[data-testid="confirm-setup"]', (el) => el.disabled && /책 두께/.test(el.textContent));
 check(
-  "첫 화면이 책장 설정이고 기본이 8×2, 칸 모양 2배(한 번에 찍기)다",
-  `${columnsValue}×${rowsValue}` === "8×2" && aspectValue === "2" && defaultShots === 1 && previewSlots === 16,
-  `${columnsValue}×${rowsValue} · ${aspectValue}배 · ${defaultShots}번에 · 미리보기 ${previewSlots}칸`,
+  "첫 화면이 책장 설정이고 기본이 8×2(칸 40×30cm)이며, 책 두께를 고르기 전에는 만들 수 없다",
+  `${columnsValue}×${rowsValue}` === "8×2" && `${widthValue}×${heightValue}` === "40×30" && kindChosen === 0 && waitsForKind && previewSlots === 16,
+  `${columnsValue}×${rowsValue} · 칸 ${widthValue}×${heightValue}cm · 두께 고름 ${kindChosen} · 미리보기 ${previewSlots}칸`,
 );
 
 // 2. 숫자를 바꾸면 미리보기가 따라 바뀐다
@@ -264,6 +265,8 @@ check("칸 수를 바꾸면 미리보기가 따라 바뀐다", afterChange === 1
 
 // 3. 확정하면 책장 화면이 뜨고 책장이 늘 보인다
 await page.fill('input[aria-label="책장 이름"]', "거실 책장");
+// 책 두께를 골라야 만들 수 있다. 보통 두께 · 기본 칸(40×30cm)은 한 번에 찍는다.
+await page.click('[data-testid="book-kind-normal"]');
 await page.click("text=이 책장 만들기");
 await page.waitForSelector('[data-testid="bookcase"]');
 const shelfSlots = await page.$$eval('[data-testid="bookcase"] .slot', (els) => els.length);
@@ -402,6 +405,8 @@ await openTools();
 await page.click("text=책장 추가");
 await page.waitForSelector('[data-testid="setup-preview"]');
 await page.fill('input[aria-label="책장 이름"]', "서재 책장");
+// 책 두께를 골라야 만들 수 있다. 보통 두께 · 기본 칸(40×30cm)은 한 번에 찍는다.
+await page.click('[data-testid="book-kind-normal"]');
 await page.click("text=이 책장 만들기");
 await page.waitForSelector('[data-testid="bookcase"]');
 const secondEmpty = await page.$$eval('[data-testid="bookcase"] .slot', (els) =>
@@ -478,6 +483,8 @@ await page.screenshot({ path: path.join(CACHE, "flow-bookcase.png"), fullPage: t
 
   // 진행 중에도 아무것도 막히지 않는다. 책장을 만들어 보고 확인한다.
   await probe.fill('input[aria-label="책장 이름"]', "받는 중에 만든 책장");
+  // 책 두께를 골라야 만들 수 있다. 보통 두께 · 기본 칸(40×30cm)은 한 번에 찍는다.
+  await probe.click('[data-testid="book-kind-normal"]');
   await probe.click("text=이 책장 만들기");
   await probe.waitForSelector('[data-testid="bookcase"]', { timeout: 5000 });
   const stillLoading = await probe.$('[data-testid="warmup-percent"]');

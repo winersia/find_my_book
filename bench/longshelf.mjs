@@ -1,6 +1,6 @@
 /**
- * 긴 칸 나눠 찍기를 점검한다. 책장 설정에서 칸 모양을 고르면 몇 번에 나눠 찍을지 미리 알리고,
- * 찍을 때 장마다 칸의 어디를 찍을지 안내해야 한다.
+ * 책장 템플릿·책 두께와 긴 칸 나눠 찍기를 점검한다. 책장 설정에서 책장 종류와 책 두께를 고르면
+ * 한 칸에 몇 권쯤인지, 몇 번에 나눠 찍을지 미리 알리고, 찍을 때 장마다 칸의 어디를 찍을지 안내해야 한다.
  *
  *   npm run build && npm run preview      # 다른 터미널에서
  *   node bench/longshelf.mjs [사진] [앱 주소]
@@ -28,21 +28,48 @@ page.on("dialog", (dialog) => {
 
 await page.goto(url, { waitUntil: "networkidle" });
 
-// 1. 책장 설정: 보통 칸은 한 번에, 긴 칸은 나눠 찍는다고 미리 알린다.
+// 1. 책장 설정: 책장 종류(템플릿)와 책 두께로 한 칸에 몇 권쯤인지, 몇 번에 나눠 찍을지 미리 알린다.
 const shotsNow = () => page.$eval('[data-testid="setup-shots"]', (el) => Number(el.dataset.shots));
-check("기본 칸 모양은 한 번에 찍는다", (await shotsNow()) === 1, await text('[data-testid="setup-shots"] .hint'));
-for (let i = 0; i < 4; i++) await page.click('button[aria-label="가로가 높이의 몇 배 늘리기"]');
-const aspect = await page.inputValue('input[aria-label="가로가 높이의 몇 배"]');
-const plan = await text('[data-testid="setup-shots"] .hint');
-const boxes = await page.$$eval('[data-testid="setup-shots"] .slot-shape-box span', (els) => els.length);
+const plan = () => text('[data-testid="setup-shots"] .hint');
+const pressed = (testid) => page.$eval(`[data-testid="${testid}"]`, (el) => el.getAttribute("aria-pressed") === "true");
+const blocked = await page.$eval('[data-testid="confirm-setup"]', (el) => el.disabled);
+check("책 두께를 고르기 전에는 만들 수 없고, 고르라고 안내한다", blocked && (await shotsNow()) === 0, await plan());
+
+await page.click('[data-testid="template-shelf-5"]');
+const summary = await text('[data-testid="template-summary"]');
+const folded = !(await page.$('input[aria-label="칸 너비 cm"]'));
+const previewSlots = await page.$$eval('[data-testid="setup-preview"] .slot', (els) => els.length);
+check("5단 책장을 고르면 1칸 × 5줄, 칸 76×30cm 가 채워지고 숫자는 접힌다", /1칸 × 5줄 · 칸 76×30cm/.test(summary) && folded && previewSlots === 5, summary);
+
+const cases = [
+  ["book-kind-thin", 68, 3],
+  ["book-kind-normal", 31, 2],
+  ["book-kind-mixed", 46, 2],
+];
+for (const [kind, books, shots] of cases) {
+  await page.click(`[data-testid="${kind}"]`);
+  const line = await plan();
+  check(`5단 책장 · ${kind.replace("book-kind-", "")}: 한 칸에 약 ${books}권, ${shots}번에 나눠 찍는다`, (await shotsNow()) === shots && line.includes(`약 ${books}권`), line);
+}
+await page.click('[data-testid="template-cube-2x2"]');
+await page.click('[data-testid="book-kind-thin"]');
+check("큐브 수납장(칸 33×33cm)의 얇은 책은 한 번에 찍는다", (await shotsNow()) === 1, await plan());
+
+// 숫자를 고치면 직접 맞추기가 된다. 치는 도중(1 → 11 → 116)에 최솟값으로 튀지 않아야 한다.
+await page.click('[data-testid="edit-numbers"]');
+await page.fill('input[aria-label="칸 너비 cm"]', "");
+await page.type('input[aria-label="칸 너비 cm"]', "116");
+await page.click('input[aria-label="칸 높이 cm"]');
+const width = await page.inputValue('input[aria-label="칸 너비 cm"]');
 check(
-  "가로가 높이의 4배인 칸은 2번에 나눠 찍는다고 미리 알린다",
-  (await shotsNow()) === 2 && /2번에 나눠/.test(plan) && boxes === 2,
-  `${aspect}배 · ${plan} · 그림 ${boxes}칸`,
+  "숫자를 고치면 직접 맞추기가 되고, 116cm 를 쳐서 넣을 수 있다",
+  width === "116" && (await pressed("template-custom")) && (await shotsNow()) === 4,
+  `${width}cm · ${await plan()}`,
 );
-for (let i = 0; i < 4; i++) await page.click('button[aria-label="가로가 높이의 몇 배 늘리기"]');
-check("6배는 3번에 나눠 찍는다", (await shotsNow()) === 3, await text('[data-testid="setup-shots"] .hint'));
-for (let i = 0; i < 4; i++) await page.click('button[aria-label="가로가 높이의 몇 배 줄이기"]');
+
+// 시나리오 진행은 5단 책장 · 보통 두께 (2번에 나눠).
+await page.click('[data-testid="template-shelf-5"]');
+await page.click('[data-testid="book-kind-normal"]');
 await page.click("text=이 책장 만들기");
 
 // 2. 칸을 고르면 촬영 버튼에 나눠 찍기가 보인다.
@@ -96,25 +123,29 @@ await page.waitForSelector('[data-testid="scan-sheet"]', { state: "detached" });
 const placed = await page.$eval('[data-slot="0"]', (el) => Number(el.dataset.count));
 check("다 찍은 뒤 넣으면 묻지 않고 두 장의 책이 다 들어간다", dialogs.length === before && placed === total, `${placed}권`);
 
-// 7. 칸 모양은 저장되고, 칸 수 바꾸기 화면에 그대로 나온다.
+// 7. 책장 종류와 책 두께는 저장되고, 칸 수 바꾸기 화면에 그대로 나온다.
 await page.reload({ waitUntil: "networkidle" });
 await page.click(".more-tools summary");
 await page.click("text=칸 수 바꾸기");
-const kept = await page.inputValue('input[aria-label="가로가 높이의 몇 배"]');
-check("칸 모양은 저장되고 다시 열어도 그대로다", kept === "4", `${kept}배`);
+await page.waitForSelector('[data-testid="templates"]');
+const keptTemplate = await pressed("template-shelf-5");
+const keptKind = await pressed("book-kind-normal");
+check("책장 종류와 책 두께는 저장되고 다시 열어도 그대로다", keptTemplate && keptKind, `5단 책장 ${keptTemplate} · 보통 두께 ${keptKind}`);
 await page.click("text=취소");
 
-// 8. 칸 모양이 없던 예전 책장은 한 번에 찍는다 (예전처럼).
+// 8. 칸 크기·책 두께가 없던 예전 책장은 한 번에 찍는다 (예전처럼).
 await page.evaluate(() => {
   const key = "find-my-book:bookcases:v1";
   const list = JSON.parse(localStorage.getItem(key));
-  delete list[0].slotAspect;
+  delete list[0].slotSize;
+  delete list[0].bookKind;
+  delete list[0].template;
   localStorage.setItem(key, JSON.stringify(list));
 });
 await page.reload({ waitUntil: "networkidle" });
 await page.click('[data-slot="1"]');
 const legacy = await text('[data-testid="scan-slot"]');
-check("칸 모양이 없던 예전 책장은 예전처럼 한 번에 찍는다", !/나눠/.test(legacy), legacy);
+check("칸 크기·책 두께가 없던 예전 책장은 예전처럼 한 번에 찍는다", !/나눠/.test(legacy), legacy);
 
 console.log(`=== ${results.filter(Boolean).length}/${results.length} 통과 ===`);
 await browser.close();
