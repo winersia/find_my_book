@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { appendBatch, booksFromReadings, needsReview, type ShelfBook } from "../lib/bookcase";
+import { appendBatch, booksFromReadings, needsReview, partLabel, type ShelfBook } from "../lib/bookcase";
 import { enrichBooks } from "../lib/enrich";
 import { recall, remember } from "../lib/memory";
 import { maxBooksPerShot, TARGET_SPINE_PX, toThumbnail } from "../lib/image";
@@ -12,6 +12,11 @@ interface Props {
   /** 이 칸에 이미 꽂혀 있는 권수. 교체 전에 알려 주기 위해 쓴다. */
   existingCount: number;
   enrich: boolean;
+  /**
+   * 이 칸을 몇 번에 나눠 찍을지 (책장 설정의 칸 크기와 책 두께에서 정해진다, bookcase.ts 의 shotsFor). 2 이상이면 장마다 칸의
+   * 어디를 찍을지 안내하고, 다 찍기 전에는 [이어서 찍기]를 먼저 권한다.
+   */
+  parts?: number;
   onApply: (books: ShelfBook[], photo: string) => void;
   onClose: () => void;
 }
@@ -29,7 +34,7 @@ const ESTIMATE_AFTER = 3;
 
 
 /** 칸 하나를 찍어 읽는 화면. 결과를 확인하고 고친 뒤 그 칸에 넣는다. */
-export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Props) {
+export function ScanSheet({ label, existingCount, enrich, parts = 1, onApply, onClose }: Props) {
   const [stage, setStage] = useState<Stage>("capture");
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [books, setBooks] = useState<ShelfBook[]>([]);
@@ -140,6 +145,15 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
   };
   // 책등이 목표 굵기에 못 미치면, 이번 사진을 몇 등분해 다시 찍어야 하는지 알려 준다.
   const thin = spinePx > 0 && spinePx < TARGET_SPINE_PX;
+  // 긴 칸을 나눠 찍는 중. 지금 찍을 장이 몇 번째인지, 아직 남은 장이 있는지.
+  const capturePart = appending ? shots + 1 : 1;
+  const planned = parts > 1 && capturePart <= parts;
+  const nextPart = shots + 1;
+  const partsLeft = parts > 1 && shots < parts;
+  const goAppend = () => {
+    setAppending(true);
+    setStage("capture");
+  };
 
   return (
     <section className="scan-sheet" data-testid="scan-sheet" data-enriching={enriching ? "true" : undefined}>
@@ -161,12 +175,25 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
       {stage === "capture" && (
         <>
           {/* 첫 실행 안내는 앱을 열 때 띠가 이미 했다 (WarmupStrip). 여기서 또 말하지 않는다. */}
-          {appending && (
-            <p className="notice" data-testid="append-notice">
-              {shots + 1}번째 사진 — 방금 찍은 곳 다음부터, 한두 권만 겹치게 찍어 주세요.
+          {planned ? (
+            <p className="notice" data-testid="part-notice">
+              {capturePart}/{parts}번째 사진 — 칸의 <b>{partLabel(capturePart, parts)}</b>을 화면에 꽉 채워 주세요.
+              {capturePart > 1 && " 앞 사진과 한두 권만 겹치게 찍어요."}
             </p>
+          ) : (
+            appending && (
+              <p className="notice" data-testid="append-notice">
+                {shots + 1}번째 사진 — 방금 찍은 곳 다음부터, 한두 권만 겹치게 찍어 주세요.
+              </p>
+            )
           )}
-          <CameraCapture onCapture={scan} disabled={false} remaining={1} autoStart />
+          <CameraCapture
+            onCapture={scan}
+            disabled={false}
+            remaining={1}
+            autoStart
+            guide={planned ? `${capturePart}/${parts} · ${partLabel(capturePart, parts)}을 꽉 채워 주세요` : undefined}
+          />
           {error && <p className="error">{error}</p>}
         </>
       )}
@@ -194,6 +221,12 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
               {existingCount > 0 && ` · 이 칸의 ${existingCount}권과 바뀝니다`}
               {enriching && " · 책 정보 찾는 중"}
             </p>
+            {partsLeft && (
+              <p className="notice" data-testid="next-part-notice">
+                {shots}/{parts}장 찍었어요. 이제 칸의 <b>{partLabel(nextPart, parts)}</b>을 이어서 찍어 주세요.
+                다 찍은 뒤에 한꺼번에 확인하면 돼요.
+              </p>
+            )}
             {pending.length > 0 && (
               <p className="notice review-notice" data-testid="review-notice">
                 표시된 {pending.length}권은 제목이 정확하지 않을 수 있어요. 사진과 맞는지 보고
@@ -282,17 +315,34 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
               })}
             </ol>
             <div className="scan-actions">
+              {partsLeft && (
+                // 긴 칸을 아직 다 안 찍었다. 확인보다 남은 장을 먼저 찍게 한다.
+                <button type="button" className="primary" onClick={goAppend} data-testid="next-part">
+                  {partLabel(nextPart, parts)} 이어서 찍기 ({nextPart}/{parts})
+                </button>
+              )}
               {pending.length > 0 ? (
                 // 확인 안 된 책이 남았다. 넣기 대신 다음 확인할 책으로 데려간다.
-                <button type="button" className="primary" onClick={goToNextPending} data-testid="next-review">
+                <button
+                  type="button"
+                  className={partsLeft ? undefined : "primary"}
+                  onClick={goToNextPending}
+                  data-testid="next-review"
+                >
                   확인 {pending.length}권 남음 · 다음 책 보기
                 </button>
               ) : (
                 <button
                   type="button"
-                  className="primary"
+                  className={partsLeft ? undefined : "primary"}
                   // 사용자가 확인한 책은 더는 "확인 필요"가 아니다.
                   onClick={() => {
+                    // 나눠 찍기를 덜 끝냈으면 한 번 묻는다. 남은 부분의 책이 빠진 채 들어간다.
+                    if (
+                      partsLeft &&
+                      !window.confirm(`칸의 ${partLabel(nextPart, parts)}을 아직 안 찍었어요. 찍은 ${kept.length}권만 넣을까요?`)
+                    )
+                      return;
                     // 사용자가 확인하거나 고친 책, 기억으로 채운 책을 기억해 둔다. 다음에 찍으면 알아본다.
                     remember(kept.filter((book) => confirmed.has(book.id) || book.remembered));
                     onApply(
@@ -308,16 +358,11 @@ export function ScanSheet({ label, existingCount, enrich, onApply, onClose }: Pr
                   {kept.length}권 이 칸에 넣기
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => {
-                  setAppending(true);
-                  setStage("capture");
-                }}
-                data-testid="append-scan"
-              >
-                이어서 찍기
-              </button>
+              {!partsLeft && (
+                <button type="button" onClick={goAppend} data-testid="append-scan">
+                  이어서 찍기
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {

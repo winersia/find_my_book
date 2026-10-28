@@ -1,4 +1,4 @@
-import { LOW_CONFIDENCE, slotLabel, type Bookcase, type ShelfBook } from "../lib/bookcase";
+import { LOW_CONFIDENCE, shotsFor, slotLabel, type Bookcase, type ShelfBook } from "../lib/bookcase";
 
 interface Props {
   bookcase: Bookcase;
@@ -26,6 +26,7 @@ export function SlotPanel({
 }: Props) {
   const slot = bookcase.slots[index];
   const label = slotLabel(bookcase, index);
+  const shots = shotsFor(bookcase);
 
   return (
     <section className="slot-panel" data-testid="slot-panel">
@@ -37,6 +38,7 @@ export function SlotPanel({
       <div className="slot-panel-actions">
         <button type="button" className="primary" onClick={onScan} data-testid="scan-slot">
           {slot.books.length === 0 ? "이 칸 촬영하기" : "이 칸 다시 찍기"}
+          {shots > 1 && ` · ${shots}번에 나눠`}
         </button>
         <button type="button" onClick={onAddBook}>
           책 직접 넣기

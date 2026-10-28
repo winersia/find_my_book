@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BookcaseSetup } from "./components/BookcaseSetup";
+import { BookcaseSetup, type BookcaseShape } from "./components/BookcaseSetup";
 import { BookcaseView } from "./components/BookcaseView";
 import { BusyOverlay } from "./components/BusyOverlay";
 import { ScanSheet } from "./components/ScanSheet";
@@ -8,6 +8,8 @@ import { WarmupStrip } from "./components/WarmupStrip";
 import {
   DEFAULT_COLUMNS,
   DEFAULT_ROWS,
+  CUSTOM_TEMPLATE,
+  DEFAULT_SLOT_SIZE,
   addBook,
   clearSlot,
   countBooks,
@@ -18,6 +20,7 @@ import {
   moveBookToSlot,
   removeBook,
   resizeBookcase,
+  shotsFor,
   saveBookcases,
   setSlotBooks,
   slotLabel,
@@ -129,14 +132,20 @@ export default function App() {
   }, []);
 
   const confirmSetup = useCallback(
-    (name: string, columns: number, rows: number) => {
+    ({ name, columns, rows, slotSize, bookKind, template }: BookcaseShape) => {
       if (resizing && current) {
-        commit(current.id, (bookcase) => ({ ...resizeBookcase(bookcase, columns, rows), name }));
+        commit(current.id, (bookcase) => ({
+          ...resizeBookcase(bookcase, columns, rows),
+          name,
+          slotSize,
+          bookKind,
+          template,
+        }));
         setResizing(false);
         setSelected(null);
         setToast({ message: "책장 칸 수를 바꿨어요." });
       } else {
-        const bookcase = createBookcase(name, columns, rows);
+        const bookcase = createBookcase(name, columns, rows, { slotSize, bookKind, template });
         setBookcases((previous) => {
           const next = [...previous, bookcase];
           saveBookcases(next);
@@ -191,6 +200,9 @@ export default function App() {
             defaultName={editing?.name ?? (bookcases.length > 0 ? `책장 ${bookcases.length + 1}` : "내 책장")}
             defaultColumns={editing?.columns ?? DEFAULT_COLUMNS}
             defaultRows={editing?.rows ?? DEFAULT_ROWS}
+            defaultSlotSize={editing?.slotSize ?? DEFAULT_SLOT_SIZE}
+            defaultBookKind={editing?.bookKind}
+            defaultTemplate={editing?.template ?? CUSTOM_TEMPLATE}
             onConfirm={confirmSetup}
             onCancel={
               bookcases.length > 0
@@ -365,6 +377,7 @@ export default function App() {
             label={slotLabel(current, selected)}
             existingCount={current.slots[selected].books.length}
             enrich={settings.enrich}
+            parts={shotsFor(current)}
             onApply={applyScan}
             onClose={() => setScanning(false)}
           />
